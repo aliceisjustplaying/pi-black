@@ -1,0 +1,211 @@
+From bf1dbac9f70c3ca2f0b44746f0d771a3297551c8 Mon Sep 17 00:00:00 2001
+From: Pi OAuth Compatibility Maintainers <noreply@example.invalid>
+Date: Thu, 10 Sep 2026 16:00:00 +0000
+Subject: [PATCH] feat(ai): forward Claude Code ATIS assignment
+
+---
+ packages/ai/src/api/anthropic-claude-code.ts  | 62 ++++++++++++++++++-
+ packages/ai/src/api/anthropic-messages.ts     |  9 ++-
+ packages/ai/test/anthropic-auth-token.test.ts |  4 +-
+ .../ai/test/anthropic-claude-code.test.ts     | 27 +++++++-
+ 4 files changed, 93 insertions(+), 9 deletions(-)
+
+diff --git a/packages/ai/src/api/anthropic-claude-code.ts b/packages/ai/src/api/anthropic-claude-code.ts
+index 8401361b..753a3017 100644
+--- a/packages/ai/src/api/anthropic-claude-code.ts
++++ b/packages/ai/src/api/anthropic-claude-code.ts
+@@ -1,6 +1,9 @@
++import { readFile } from "node:fs/promises";
++import { homedir } from "node:os";
++import { join } from "node:path";
+ import type { FetchFunction, Message } from "../types.ts";
+ 
+-export const CLAUDE_CODE_VERSION = "2.1.258";
++export const CLAUDE_CODE_VERSION = "2.1.277";
+ export const CLAUDE_CODE_ENTRYPOINT = "sdk-cli";
+ 
+ const CCH_PLACEHOLDER = "cch=00000";
+@@ -12,6 +15,45 @@ const PRIME64_3 = 0x165667b19e3779f9n;
+ const PRIME64_4 = 0x85ebca77c2b2ae63n;
+ const PRIME64_5 = 0x27d4eb2f165667c5n;
+ 
++function isObject(value: unknown): value is Record<string, unknown> {
++	return typeof value === "object" && value !== null && !Array.isArray(value);
++}
++
++function isSafeHeaderValue(value: unknown): value is string {
++	return typeof value === "string" && value.length > 0 && value.length <= 512 && !/[\s\x00-\x1f\x7f]/u.test(value);
++}
++
++export function parseClaudeCodeAtis(value: unknown, modelId: string): string | undefined {
++	if (!isObject(value) || !isObject(value.clientDataCacheSlots)) return undefined;
++
++	let selected: { at: number; atis: string } | undefined;
++	for (const slot of Object.values(value.clientDataCacheSlots)) {
++		if (!isObject(slot) || slot.model !== modelId || !isObject(slot.data)) continue;
++		const atis = slot.data.atis;
++		const at = typeof slot.at === "number" ? slot.at : 0;
++		if (!isSafeHeaderValue(atis) || (selected && selected.at >= at)) continue;
++		selected = { at, atis };
++	}
++	return selected?.atis;
++}
++
++export async function discoverClaudeCodeAtis(modelId: string): Promise<string | undefined> {
++	if (isSafeHeaderValue(process.env.CLAUDE_CODE_ATIS)) return process.env.CLAUDE_CODE_ATIS;
++	const path = join(process.env.CLAUDE_CONFIG_DIR || homedir(), ".claude.json");
++	try {
++		return parseClaudeCodeAtis(JSON.parse(await readFile(path, "utf8")), modelId);
++	} catch {
++		return undefined;
++	}
++}
++
++let atisLatch: Promise<string | undefined> | undefined;
++
++export function latchClaudeCodeAtis(modelId: string): Promise<string | undefined> {
++	if (!atisLatch) atisLatch = discoverClaudeCodeAtis(modelId);
++	return atisLatch;
++}
++
+ function rotateLeft(value: bigint, bits: bigint): bigint {
+ 	const normalized = value & MASK_64;
+ 	return ((normalized << bits) | (normalized >> (64n - bits))) & MASK_64;
+@@ -158,11 +200,27 @@ function requestHeaders(input: Parameters<FetchFunction>[0], init?: RequestInit)
+ 	return headers;
+ }
+ 
++function isFirstPartyAnthropicRequest(input: Parameters<FetchFunction>[0]): boolean {
++	try {
++		const url = new URL(input instanceof Request ? input.url : String(input));
++		return url.protocol === "https:" && url.hostname === "api.anthropic.com";
++	} catch {
++		return false;
++	}
++}
++
+ /** Patch the SDK's final compact JSON and add identifiers generated per HTTP request. */
+-export function createClaudeCodeFetch(fetchImplementation: FetchFunction): FetchFunction {
++export function createClaudeCodeFetch(
++	fetchImplementation: FetchFunction,
++	atis: string | undefined | Promise<string | undefined> = undefined,
++): FetchFunction {
+ 	return async (input, init) => {
+ 		const headers = requestHeaders(input, init);
+ 		if (!headers.has("x-client-request-id")) headers.set("x-client-request-id", crypto.randomUUID());
++		if (isFirstPartyAnthropicRequest(input)) {
++			const resolvedAtis = await atis;
++			if (isSafeHeaderValue(resolvedAtis)) headers.set("x-cc-atis", resolvedAtis);
++		}
+ 
+ 		if (typeof init?.body === "string") {
+ 			return fetchImplementation(input, { ...init, headers, body: patchClaudeCodeCch(init.body) });
+diff --git a/packages/ai/src/api/anthropic-messages.ts b/packages/ai/src/api/anthropic-messages.ts
+index 4fb8478b..0ef3701d 100644
+--- a/packages/ai/src/api/anthropic-messages.ts
++++ b/packages/ai/src/api/anthropic-messages.ts
+@@ -37,7 +37,12 @@ import { getProviderEnvValue } from "../utils/provider-env.ts";
+ import { retryProviderRequest } from "../utils/provider-retry.ts";
+ import { sanitizeSurrogates } from "../utils/sanitize-unicode.ts";
+ 
+-import { buildClaudeCodeBillingHeader, CLAUDE_CODE_VERSION, createClaudeCodeFetch } from "./anthropic-claude-code.ts";
++import {
++	buildClaudeCodeBillingHeader,
++	CLAUDE_CODE_VERSION,
++	createClaudeCodeFetch,
++	latchClaudeCodeAtis,
++} from "./anthropic-claude-code.ts";
+ import { resolveJsonSchemaStrictSampling } from "./constrained-sampling.ts";
+ import { buildCopilotDynamicHeaders, hasCopilotVisionInput } from "./github-copilot-headers.ts";
+ import { adjustMaxTokensForThinking, buildBaseOptions, clampMaxTokensToContext } from "./simple-options.ts";
+@@ -893,7 +898,7 @@ function createClient(
+ 			authToken: apiKey,
+ 			baseURL: model.baseUrl,
+ 			dangerouslyAllowBrowser: true,
+-			fetch: createClaudeCodeFetch(fetch ?? globalThis.fetch),
++			fetch: createClaudeCodeFetch(fetch ?? globalThis.fetch, latchClaudeCodeAtis(model.id)),
+ 			defaultHeaders: mergeHeaders(
+ 				{
+ 					accept: "application/json",
+diff --git a/packages/ai/test/anthropic-auth-token.test.ts b/packages/ai/test/anthropic-auth-token.test.ts
+index 29e8f9f8..27f43f29 100644
+--- a/packages/ai/test/anthropic-auth-token.test.ts
++++ b/packages/ai/test/anthropic-auth-token.test.ts
+@@ -166,10 +166,10 @@ describe("Anthropic auth token env", () => {
+ 		expect(mockState.constructorOpts?.authToken).toBe("sk-ant-oat-test");
+ 		const headers = mockState.constructorOpts?.defaultHeaders as Record<string, string>;
+ 		expect(headers["anthropic-beta"]).toContain("oauth-2025-04-20");
+-		expect(headers["user-agent"]).toBe("claude-cli/2.1.258 (external, sdk-cli)");
++		expect(headers["user-agent"]).toBe("claude-cli/2.1.277 (external, sdk-cli)");
+ 		const system = mockState.createParams?.system as Array<{ text: string; cache_control?: unknown }>;
+ 		expect(system[0].text).toMatch(
+-			/^x-anthropic-billing-header: cc_version=2\.1\.258\.[0-9a-f]{3}; cc_entrypoint=sdk-cli; cch=00000;$/,
++			/^x-anthropic-billing-header: cc_version=2\.1\.277\.[0-9a-f]{3}; cc_entrypoint=sdk-cli; cch=00000;$/,
+ 		);
+ 		expect(system[0].cache_control).toBeUndefined();
+ 		expect(system[1]).toEqual({
+diff --git a/packages/ai/test/anthropic-claude-code.test.ts b/packages/ai/test/anthropic-claude-code.test.ts
+index b7c32ce9..d59b7ebd 100644
+--- a/packages/ai/test/anthropic-claude-code.test.ts
++++ b/packages/ai/test/anthropic-claude-code.test.ts
+@@ -3,6 +3,7 @@ import {
+ 	buildClaudeCodeBillingHeader,
+ 	claudeCodeVersionFingerprint,
+ 	createClaudeCodeFetch,
++	parseClaudeCodeAtis,
+ 	patchClaudeCodeCch,
+ 	xxHash64,
+ } from "../src/api/anthropic-claude-code.ts";
+@@ -18,12 +19,24 @@ describe("Claude Code Anthropic request compatibility", () => {
+ 	});
+ 
+ 	it("reproduces the recovered cc_version prompt fingerprint", async () => {
+-		expect(await claudeCodeVersionFingerprint(promptMessages("Reply with exactly: PROBE_OK"))).toBe("01c");
++		expect(await claudeCodeVersionFingerprint(promptMessages("Reply with exactly: PROBE_OK"))).toBe("81a");
+ 		expect(await buildClaudeCodeBillingHeader(promptMessages("Reply with exactly: PROBE_OK"))).toBe(
+-			"x-anthropic-billing-header: cc_version=2.1.258.01c; cc_entrypoint=sdk-cli; cch=00000;",
++			"x-anthropic-billing-header: cc_version=2.1.277.81a; cc_entrypoint=sdk-cli; cch=00000;",
+ 		);
+ 	});
+ 
++	it("selects the newest model-specific ATIS assignment", () => {
++		const state = {
++			clientDataCacheSlots: {
++				old: { at: 1, model: "claude-opus-5", data: { atis: "1111111111111111" } },
++				current: { at: 2, model: "claude-opus-5", data: { atis: "2222222222222222" } },
++				other: { at: 3, model: "claude-fable-5-1", data: { atis: "3333333333333333" } },
++			},
++		};
++		expect(parseClaudeCodeAtis(state, "claude-opus-5")).toBe("2222222222222222");
++		expect(parseClaudeCodeAtis(state, "claude-sonnet-5")).toBeUndefined();
++	});
++
+ 	it("omits the model value and complete max_tokens member before seeded XXH64", () => {
+ 		const body =
+ 			'{"model":"claude-opus-5","messages":[{"role":"user","content":"A"}],"max_tokens":64000,"stream":true,"system":[{"type":"text","text":"x-anthropic-billing-header: cc_version=2.1.224.000; cc_entrypoint=sdk-cli; cch=00000;"}]}';
+@@ -56,7 +69,7 @@ describe("Claude Code Anthropic request compatibility", () => {
+ 		const body =
+ 			'{"model":"claude-opus-5","messages":[],"max_tokens":1,"stream":true,"system":[{"type":"text","text":"x-anthropic-billing-header: cc_version=2.1.224.000; cc_entrypoint=sdk-cli; cch=00000;"}]}';
+ 		const transport = vi.fn<typeof fetch>(async () => new Response(null, { status: 200 }));
+-		const wrapped = createClaudeCodeFetch(transport);
++		const wrapped = createClaudeCodeFetch(transport, Promise.resolve("0123456789abcdef"));
+ 
+ 		await wrapped("https://api.anthropic.com/v1/messages", {
+ 			method: "POST",
+@@ -71,5 +84,13 @@ describe("Claude Code Anthropic request compatibility", () => {
+ 		const headers = new Headers(init?.headers);
+ 		expect(headers.get("x-client-request-id")).toMatch(/^[0-9a-f-]{36}$/);
+ 		expect(headers.get("authorization")).toBe("Bearer secret");
++		expect(headers.get("x-cc-atis")).toBe("0123456789abcdef");
++
++		await createClaudeCodeFetch(transport, "0123456789abcdef")("https://proxy.example.com/v1/messages", {
++			method: "POST",
++			body,
++		});
++		const [, proxyInit] = transport.mock.calls[1];
++		expect(new Headers(proxyInit?.headers).get("x-cc-atis")).toBeNull();
+ 	});
+ });
+-- 
+2.54.0 (Apple Git-157)
+

@@ -14,6 +14,7 @@ cd "$repo_root"
 sh -n install.sh
 sh -n launcher.sh
 sh -n test/installer.sh
+bash -n scripts/install-pinned-model-data.sh
 ./test/installer.sh
 npm ci --ignore-scripts
 npm run check
@@ -29,7 +30,7 @@ fi
 
 cd "$source_dir"
 npm ci --ignore-scripts
-npx tsx packages/ai/scripts/generate-models.ts --strict --data-only
+"$repo_root/scripts/install-pinned-model-data.sh" "$source_dir"
 node "$source_dir/node_modules/vitest/dist/cli.js" --run \
     packages/ai/test/anthropic-claude-code.test.ts \
     packages/ai/test/anthropic-auth-token.test.ts

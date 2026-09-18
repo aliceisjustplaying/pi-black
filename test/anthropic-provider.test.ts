@@ -68,10 +68,15 @@ describe("Anthropic provider wrapper", () => {
 
 	it("applies existing payload transforms before the final Pi Black transform", async () => {
 		const fake = fakeProvider();
-		const wrapped = wrapAnthropicProvider(fake.provider, {
-			deviceId: "f".repeat(64),
-			accountUuid: "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
-		});
+		const resolveAtis = vi.fn(() => "0123456789abcdef");
+		const wrapped = wrapAnthropicProvider(
+			fake.provider,
+			{
+				deviceId: "f".repeat(64),
+				accountUuid: "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+			},
+			resolveAtis,
+		);
 		const priorTransform = vi.fn(async (payload: unknown) => ({
 			...(payload as object),
 			later_extension: true,
@@ -109,5 +114,10 @@ describe("Anthropic provider wrapper", () => {
 			"x-app": "cli",
 			"x-claude-code-session-id": "11111111-2222-4333-8444-555555555555",
 		});
+		expect(resolveAtis).toHaveBeenCalledOnce();
+		expect(resolveAtis).toHaveBeenCalledWith("claude-test");
+
+		wrapped.streamSimple(model, context, { apiKey: "sk-ant-oat-test" });
+		expect(resolveAtis).toHaveBeenCalledOnce();
 	});
 });

@@ -8,7 +8,9 @@ import {
 	CLAUDE_CODE_VERSION,
 	claudeCodeVersionFingerprint,
 	createClaudeCodeFetch,
+	discoverClaudeCodeAtis,
 	discoverClaudeCodeIdentity,
+	parseClaudeCodeAtis,
 	parseClaudeCodeIdentity,
 	patchClaudeCodeCch,
 	transformClaudeCodePayload,
@@ -47,13 +49,13 @@ describe("Claude Code protocol", () => {
 			await claudeCodeVersionFingerprint(
 				promptMessages("Reply with exactly: PROBE_OK"),
 			),
-		).toBe("01c");
+		).toBe("81a");
 		expect(
 			await buildClaudeCodeBillingHeader(
 				promptMessages("Reply with exactly: PROBE_OK"),
 			),
 		).toBe(
-			`x-anthropic-billing-header: cc_version=${CLAUDE_CODE_VERSION}.01c; cc_entrypoint=sdk-cli; cch=00000;`,
+			`x-anthropic-billing-header: cc_version=${CLAUDE_CODE_VERSION}.81a; cc_entrypoint=sdk-cli; cch=00000;`,
 		);
 	});
 
@@ -61,15 +63,40 @@ describe("Claude Code protocol", () => {
 		const root = await mkdtemp(join(tmpdir(), "pi-black-"));
 		temporaryDirectories.push(root);
 		const path = join(root, ".claude.json");
-		await writeFile(
-			path,
-			JSON.stringify({ userID: deviceId, oauthAccount: { accountUuid } }),
-		);
+		const state = {
+			userID: deviceId,
+			oauthAccount: { accountUuid },
+			clientDataCacheSlots: {
+				old: {
+					at: 1,
+					model: "claude-opus-5",
+					data: { atis: "1111111111111111" },
+				},
+				current: {
+					at: 2,
+					model: "claude-opus-5",
+					data: { atis: "2222222222222222" },
+				},
+				otherModel: {
+					at: 3,
+					model: "claude-fable-5-1",
+					data: { atis: "3333333333333333" },
+				},
+			},
+		};
+		await writeFile(path, JSON.stringify(state));
 
 		expect(await discoverClaudeCodeIdentity({}, path)).toEqual({
 			deviceId,
 			accountUuid,
 		});
+		expect(await discoverClaudeCodeAtis("claude-opus-5", {}, path)).toBe(
+			"2222222222222222",
+		);
+		expect(parseClaudeCodeAtis(state, "claude-fable-5-1")).toBe(
+			"3333333333333333",
+		);
+		expect(parseClaudeCodeAtis(state, "claude-sonnet-5")).toBeUndefined();
 		expect(
 			parseClaudeCodeIdentity({ userID: "bad", oauthAccount: { accountUuid } }),
 		).toBeUndefined();
@@ -101,13 +128,17 @@ describe("Claude Code protocol", () => {
 		const system = payload.system as Array<Record<string, unknown>>;
 		expect(system[0]).toEqual({
 			type: "text",
-			text: `x-anthropic-billing-header: cc_version=${CLAUDE_CODE_VERSION}.01c; cc_entrypoint=sdk-cli; cch=00000;`,
+			text: `x-anthropic-billing-header: cc_version=${CLAUDE_CODE_VERSION}.81a; cc_entrypoint=sdk-cli; cch=00000;`,
 		});
 		expect(system[1]).toEqual({
 			type: "text",
 			text: "You are a Claude agent, built on Anthropic's Claude Agent SDK.",
 		});
 		expect(system[2]).toEqual({
+			type: "text",
+			text: "You are powered by the model named Opus 5. The exact model ID is claude-opus-5. Assistant knowledge cutoff is May 2026.",
+		});
+		expect(system[3]).toEqual({
 			type: "text",
 			text: "Pi system",
 			cache_control: { type: "ephemeral" },
@@ -119,6 +150,52 @@ describe("Claude Code protocol", () => {
 				session_id: "11111111-2222-4333-8444-555555555555",
 			}),
 		});
+	});
+
+	it("adds the Claude Code model identity and cutoff once for verified models", async () => {
+		const first = await transformClaudeCodePayload(
+			{
+				model: "claude-fable-5-1",
+				messages: [],
+				max_tokens: 1,
+				stream: true,
+				system: [{ type: "text", text: "Pi system" }],
+			},
+			context("hello"),
+			undefined,
+			undefined,
+		);
+		const second = await transformClaudeCodePayload(
+			first,
+			context("hello"),
+			undefined,
+			undefined,
+		);
+		const system = second.system as Array<{ text: string }>;
+		const modelContext =
+			"You are powered by the model named Fable 5.1. The exact model ID is claude-fable-5-1. Assistant knowledge cutoff is June 2026.";
+		expect(system[2]?.text).toBe(modelContext);
+		expect(system.filter((block) => block.text === modelContext)).toHaveLength(1);
+		expect(system[3]?.text).toBe("Pi system");
+
+		for (const [model, expected] of [
+			[
+				"claude-opus-5",
+				"You are powered by the model named Opus 5. The exact model ID is claude-opus-5. Assistant knowledge cutoff is May 2026.",
+			],
+			[
+				"claude-sonnet-5",
+				"You are powered by the model named Sonnet 5. The exact model ID is claude-sonnet-5. Assistant knowledge cutoff is January 2026.",
+			],
+		] as const) {
+			const result = await transformClaudeCodePayload(
+				{ model, messages: [], max_tokens: 1, stream: true },
+				context("hello"),
+				undefined,
+				undefined,
+			);
+			expect((result.system as Array<{ text: string }>)[2]?.text).toBe(expected);
+		}
 	});
 
 	it("does not duplicate blocks when the retained source patch is also present", async () => {
@@ -155,8 +232,8 @@ describe("Claude Code protocol", () => {
 
 	it("reproduces the recovered normalized-body checksum", () => {
 		const body =
-			'{"model":"claude-opus-5","messages":[{"role":"user","content":"A"}],"max_tokens":64000,"stream":true,"system":[{"type":"text","text":"x-anthropic-billing-header: cc_version=2.1.224.000; cc_entrypoint=sdk-cli; cch=00000;"}]}';
-		expect(patchClaudeCodeCch(body)).toContain("cch=7ba34");
+			'{"model":"claude-opus-5","messages":[{"role":"user","content":"A"}],"max_tokens":64000,"stream":true,"system":[{"type":"text","text":"x-anthropic-billing-header: cc_version=2.1.251.000; cc_entrypoint=sdk-cli; cch=00000;"}]}';
+		expect(patchClaudeCodeCch(body)).toContain("cch=e40b4");
 	});
 
 	it("patches only the first billing block despite placeholder and nested-field collisions", () => {
@@ -175,7 +252,7 @@ describe("Claude Code protocol", () => {
 			system: [
 				{
 					type: "text",
-					text: "x-anthropic-billing-header: cc_version=2.1.224.000; cc_entrypoint=sdk-cli; cch=00000;",
+					text: "x-anthropic-billing-header: cc_version=2.1.251.000; cc_entrypoint=sdk-cli; cch=00000;",
 				},
 				{ type: "text", text: "fake cch=00000" },
 			],
@@ -206,7 +283,7 @@ describe("Claude Code protocol", () => {
 			system: [
 				{
 					type: "text",
-					text: "x-anthropic-billing-header: cc_version=2.1.224.000; cc_entrypoint=sdk-cli; cch=abc12;",
+					text: "x-anthropic-billing-header: cc_version=2.1.251.000; cc_entrypoint=sdk-cli; cch=abc12;",
 				},
 			],
 		});
@@ -222,14 +299,17 @@ describe("Claude Code protocol", () => {
 			system: [
 				{
 					type: "text",
-					text: "x-anthropic-billing-header: cc_version=2.1.224.000; cc_entrypoint=sdk-cli; cch=00000;",
+					text: "x-anthropic-billing-header: cc_version=2.1.251.000; cc_entrypoint=sdk-cli; cch=00000;",
 				},
 			],
 		});
 		const transport = vi.fn<typeof fetch>(
 			async () => new Response(null, { status: 200 }),
 		);
-		await createClaudeCodeFetch(transport)(
+		await createClaudeCodeFetch(
+			transport,
+			Promise.resolve("0123456789abcdef"),
+		)(
 			"https://api.anthropic.com/v1/messages",
 			{
 				method: "POST",
@@ -243,5 +323,13 @@ describe("Claude Code protocol", () => {
 		const headers = new Headers(init?.headers);
 		expect(headers.get("x-client-request-id")).toMatch(/^[0-9a-f-]{36}$/u);
 		expect(headers.get("authorization")).toBe("Bearer secret");
+		expect(headers.get("x-cc-atis")).toBe("0123456789abcdef");
+
+		await createClaudeCodeFetch(transport, "0123456789abcdef")(
+			"https://proxy.example.com/v1/messages",
+			{ method: "POST", body },
+		);
+		const [, proxyInit] = transport.mock.calls[1];
+		expect(new Headers(proxyInit?.headers).get("x-cc-atis")).toBeNull();
 	});
 });

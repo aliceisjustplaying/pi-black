@@ -8,6 +8,7 @@ import type {
 } from "@earendil-works/pi-ai";
 import {
 	type ClaudeCodeIdentity,
+	discoverClaudeCodeAtis,
 	discoverClaudeCodeIdentity,
 	isAnthropicOAuthToken,
 	mergeClaudeCodeOptions,
@@ -19,9 +20,22 @@ export function wrapAnthropicProvider(
 		| ClaudeCodeIdentity
 		| undefined
 		| Promise<ClaudeCodeIdentity | undefined> = discoverClaudeCodeIdentity(),
+	resolveAtis: (
+		modelId: string,
+	) => string | undefined | Promise<string | undefined> = discoverClaudeCodeAtis,
 ): Provider {
 	if (provider.id !== "anthropic")
 		throw new Error(`Pi Black cannot wrap provider "${provider.id}"`);
+
+	let hasAtisLatch = false;
+	let atisLatch: string | undefined | Promise<string | undefined>;
+	const latchedAtis = (modelId: string) => {
+		if (!hasAtisLatch) {
+			hasAtisLatch = true;
+			atisLatch = resolveAtis(modelId);
+		}
+		return atisLatch;
+	};
 
 	return {
 		...provider,
@@ -32,7 +46,12 @@ export function wrapAnthropicProvider(
 		) {
 			if (!options || !isAnthropicOAuthToken(options.apiKey))
 				return provider.stream(model, context, options);
-			const transformed = mergeClaudeCodeOptions(options, context, identity);
+			const transformed = mergeClaudeCodeOptions(
+				options,
+				context,
+				identity,
+				latchedAtis(model.id),
+			);
 			return provider.stream(model, context, transformed);
 		},
 		streamSimple(
@@ -45,7 +64,12 @@ export function wrapAnthropicProvider(
 			return provider.streamSimple(
 				model,
 				context,
-				mergeClaudeCodeOptions(options, context, identity),
+				mergeClaudeCodeOptions(
+					options,
+					context,
+					identity,
+					latchedAtis(model.id),
+				),
 			);
 		},
 	};

@@ -1,8 +1,8 @@
 # Repeatable build
 
-The source repository, base commit, Pi version, Node major version, and Bun version are pinned in `config/pi.env`. The patch itself contains a `base-commit` trailer.
+The source repository, base commit, Pi version, Node major version and Bun version are pinned in `config/pi.env`. The patch itself contains a `base-commit` trailer.
 
-Pi's model catalog is hydrated from upstream model APIs during each build, matching Pi's release process. Those APIs are mutable, so rebuilding later is not guaranteed to produce byte-for-byte identical archives. Published binaries are identified by release checksums and provenance.
+Model data is extracted from the published `@earendil-works/pi-ai` package at the exact pinned Pi version. This avoids mutable model-catalog APIs during verification and builds. Published binaries are identified by release checksums and provenance.
 
 ## Prerequisites
 
@@ -25,7 +25,7 @@ sudo apt-get install -y libcairo2-dev libpango1.0-dev libjpeg-dev libgif-dev lib
 ./scripts/prepare-pi-source.sh "$PWD/build/pi"
 ```
 
-This clones only the pinned repository, checks out the exact commit, applies `patches/*.patch` with `git am`, and verifies the resulting parent commit.
+This clones only the pinned repository, checks out the exact commit, applies `patches/*.patch` with `git am` and verifies the resulting parent commit.
 
 ## Build every supported target
 
@@ -44,7 +44,7 @@ pi-windows-arm64.zip
 pi-windows-x64.zip
 ```
 
-The helper delegates compilation and runtime-asset staging to Pi's own `scripts/build-binaries.sh` with bundled model data. It installs dependencies using the pinned Pi lockfile and `npm ci --ignore-scripts`.
+The helper installs dependencies with the pinned Pi lockfile, extracts model data from `@earendil-works/pi-ai@0.84.1` and delegates compilation and runtime-asset staging to Pi's own `scripts/build-binaries.sh`.
 
 ## Verify without building binaries
 

@@ -9,7 +9,7 @@ import type {
 	StreamOptions,
 } from "@earendil-works/pi-ai";
 
-export const CLAUDE_CODE_VERSION = "2.1.258";
+export const CLAUDE_CODE_VERSION = "2.1.277";
 export const CLAUDE_CODE_ENTRYPOINT = "sdk-cli";
 
 const CCH_PLACEHOLDER = "cch=00000";
@@ -25,9 +25,24 @@ const AGENT_SDK_SYSTEM_PROMPT =
 const LEGACY_PI_OAUTH_SYSTEM_PROMPT =
 	"You are Claude Code, Anthropic's official CLI for Claude.";
 
+const CLAUDE_CODE_MODEL_CONTEXTS: Record<string, string> = {
+	"claude-fable-5-1":
+		"You are powered by the model named Fable 5.1. The exact model ID is claude-fable-5-1. Assistant knowledge cutoff is June 2026.",
+	"claude-opus-5":
+		"You are powered by the model named Opus 5. The exact model ID is claude-opus-5. Assistant knowledge cutoff is May 2026.",
+	"claude-sonnet-5":
+		"You are powered by the model named Sonnet 5. The exact model ID is claude-sonnet-5. Assistant knowledge cutoff is January 2026.",
+};
+
 export interface ClaudeCodeIdentity {
 	deviceId: string;
 	accountUuid: string;
+}
+
+interface ClaudeCodeCacheSlot extends JsonObject {
+	at?: unknown;
+	model?: unknown;
+	data?: unknown;
 }
 
 interface JsonObject {
@@ -180,6 +195,39 @@ export function parseClaudeCodeIdentity(
 	return { deviceId: value.userID, accountUuid };
 }
 
+function claudeConfigPath(env: NodeJS.ProcessEnv, configPath?: string): string {
+	return configPath ?? join(env.CLAUDE_CONFIG_DIR || homedir(), ".claude.json");
+}
+
+function isSafeHeaderValue(value: unknown): value is string {
+	return (
+		typeof value === "string" &&
+		value.length > 0 &&
+		value.length <= 512 &&
+		!/[\s\x00-\x1f\x7f]/u.test(value)
+	);
+}
+
+export function parseClaudeCodeAtis(
+	value: unknown,
+	modelId: string,
+): string | undefined {
+	if (!isObject(value) || !isObject(value.clientDataCacheSlots))
+		return undefined;
+
+	let selected: { at: number; atis: string } | undefined;
+	for (const slotValue of Object.values(value.clientDataCacheSlots)) {
+		if (!isObject(slotValue)) continue;
+		const slot = slotValue as ClaudeCodeCacheSlot;
+		if (slot.model !== modelId || !isObject(slot.data)) continue;
+		const atis = slot.data.atis;
+		const at = typeof slot.at === "number" ? slot.at : 0;
+		if (!isSafeHeaderValue(atis) || (selected && selected.at >= at)) continue;
+		selected = { at, atis };
+	}
+	return selected?.atis;
+}
+
 export async function discoverClaudeCodeIdentity(
 	env: NodeJS.ProcessEnv = process.env,
 	configPath?: string,
@@ -194,10 +242,26 @@ export async function discoverClaudeCodeIdentity(
 		if (fromEnvironment) return fromEnvironment;
 	}
 
-	const path =
-		configPath ?? join(env.CLAUDE_CONFIG_DIR || homedir(), ".claude.json");
 	try {
-		return parseClaudeCodeIdentity(JSON.parse(await readFile(path, "utf8")));
+		return parseClaudeCodeIdentity(
+			JSON.parse(await readFile(claudeConfigPath(env, configPath), "utf8")),
+		);
+	} catch {
+		return undefined;
+	}
+}
+
+export async function discoverClaudeCodeAtis(
+	modelId: string,
+	env: NodeJS.ProcessEnv = process.env,
+	configPath?: string,
+): Promise<string | undefined> {
+	if (isSafeHeaderValue(env.CLAUDE_CODE_ATIS)) return env.CLAUDE_CODE_ATIS;
+	try {
+		return parseClaudeCodeAtis(
+			JSON.parse(await readFile(claudeConfigPath(env, configPath), "utf8")),
+			modelId,
+		);
 	} catch {
 		return undefined;
 	}
@@ -211,6 +275,10 @@ export async function transformClaudeCodePayload(
 ): Promise<JsonObject> {
 	if (!isObject(payload))
 		throw new Error("Pi Black expected an Anthropic JSON request object");
+	const modelContext =
+		typeof payload.model === "string"
+			? CLAUDE_CODE_MODEL_CONTEXTS[payload.model]
+			: undefined;
 	const existingSystem = Array.isArray(payload.system) ? payload.system : [];
 	const firstSystemText = isObject(existingSystem[0])
 		? existingSystem[0].text
@@ -227,12 +295,18 @@ export async function transformClaudeCodePayload(
 				? existingSystem.slice(1)
 				: existingSystem;
 	const billingHeader = await buildClaudeCodeBillingHeader(context.messages);
+	const systemWithoutDuplicateModelContext = modelContext
+		? remainingSystem.filter(
+				(block) => !isObject(block) || block.text !== modelContext,
+			)
+		: remainingSystem;
 	const transformed: JsonObject = {
 		...payload,
 		system: [
 			{ type: "text", text: billingHeader },
 			{ type: "text", text: AGENT_SDK_SYSTEM_PROMPT },
-			...remainingSystem,
+			...(modelContext ? [{ type: "text", text: modelContext }] : []),
+			...systemWithoutDuplicateModelContext,
 		],
 	};
 	if (identity && sessionId) {
@@ -303,13 +377,29 @@ function requestHeaders(
 	return headers;
 }
 
+function isFirstPartyAnthropicRequest(
+	input: Parameters<FetchFunction>[0],
+): boolean {
+	try {
+		const url = new URL(input instanceof Request ? input.url : String(input));
+		return url.protocol === "https:" && url.hostname === "api.anthropic.com";
+	} catch {
+		return false;
+	}
+}
+
 export function createClaudeCodeFetch(
 	fetchImplementation: FetchFunction,
+	atis: string | undefined | Promise<string | undefined> = undefined,
 ): FetchFunction {
 	return async (input, init) => {
 		const headers = requestHeaders(input, init);
 		if (!headers.has("x-client-request-id"))
 			headers.set("x-client-request-id", crypto.randomUUID());
+		if (isFirstPartyAnthropicRequest(input)) {
+			const resolvedAtis = await atis;
+			if (isSafeHeaderValue(resolvedAtis)) headers.set("x-cc-atis", resolvedAtis);
+		}
 
 		if (typeof init?.body === "string") {
 			return fetchImplementation(input, {
@@ -353,13 +443,14 @@ export function mergeClaudeCodeOptions<T extends StreamOptions>(
 		| ClaudeCodeIdentity
 		| undefined
 		| Promise<ClaudeCodeIdentity | undefined>,
+	atis: string | undefined | Promise<string | undefined> = undefined,
 ): T {
 	const originalOnPayload = options.onPayload;
 	const transport = options.fetch ?? globalThis.fetch;
 	return {
 		...options,
 		headers: { ...options.headers, ...claudeCodeHeaders(options.sessionId) },
-		fetch: createClaudeCodeFetch(transport),
+		fetch: createClaudeCodeFetch(transport, atis),
 		onPayload: async (payload, model) => {
 			const prior = await originalOnPayload?.(payload, model);
 			return transformClaudeCodePayload(
