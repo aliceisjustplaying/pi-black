@@ -2,7 +2,7 @@
 
 Use your Claude Max (or Pro) subscription with Pi.
 
-Pi Black is an unofficial Pi package that routes Anthropic OAuth requests through your existing Claude subscription usage by applying Claude Code 2.1.277 request conventions. The existing source patch and standalone-binary build system remain available as a fallback.
+Pi Black is an unofficial Pi package that routes Anthropic OAuth requests through your existing Claude subscription usage by applying Claude Code 2.1.280 request conventions. The existing source patch and standalone-binary build system remain available as a fallback.
 
 ## Install
 
@@ -12,7 +12,7 @@ Pi Black has three independently versioned compatibility surfaces:
 | --- | --- |
 | Pi package | Pi 0.84.1 or newer |
 | Standalone `pi-black` binary | Based on Pi 0.84.1 |
-| Claude Code protocol | 2.1.277 |
+| Claude Code protocol | 2.1.280 |
 
 The Pi package requires Pi 0.84.1 or newer, with no upper version limit. Future Pi releases are trusted until an incompatibility is identified; the package peer dependencies are `"*"` because Pi supplies its core packages at runtime.
 
