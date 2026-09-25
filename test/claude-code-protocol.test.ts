@@ -30,47 +30,87 @@ afterEach(async () => {
 });
 
 describe("Anthropic request log", () => {
-	it("records the server request-id with the session and client request ids", async () => {
-		const transport = vi.fn<typeof fetch>(
-			async () =>
-				new Response(null, {
-					status: 400,
-					headers: { "request-id": "req_011CTest" },
-				}),
-		);
-		await createClaudeCodeFetch(transport)(
+	const requestBody = JSON.stringify({
+		model: "claude-opus-5-5",
+		max_tokens: 1,
+		system: [
+			{
+				type: "text",
+				text: "x-anthropic-billing-header: cc_version=2.1.280.000; cc_entrypoint=sdk-cli; cch=00000;",
+			},
+		],
+	});
+	const readLog = async () =>
+		(await readFile(join(requestLogDir, "requests.jsonl"), "utf8"))
+			.trim()
+			.split("\n")
+			.map((line) => JSON.parse(line));
+	const send = async (response: Response) => {
+		const transport = vi.fn<typeof fetch>(async () => response);
+		const passed = await createClaudeCodeFetch(transport)(
 			"https://api.anthropic.com/v1/messages",
 			{
 				method: "POST",
 				headers: { "x-claude-code-session-id": "session-1" },
-				body: JSON.stringify({
-					model: "claude-opus-5-5",
-					max_tokens: 1,
-					system: [
-						{
-							type: "text",
-							text: "x-anthropic-billing-header: cc_version=2.1.280.000; cc_entrypoint=sdk-cli; cch=00000;",
-						},
-					],
-				}),
+				body: requestBody,
 			},
 		);
-
-		const lines = (
-			await readFile(join(requestLogDir, "requests.jsonl"), "utf8")
-		)
-			.trim()
-			.split("\n")
-			.map((line) => JSON.parse(line));
 		const sentId = new Headers(transport.mock.calls[0][1]?.headers).get(
 			"x-client-request-id",
 		);
-		expect(lines).toEqual([
+		return { text: await passed.text(), sentId };
+	};
+
+	it("logs ids and the stop reason from a streamed refusal without altering the stream", async () => {
+		const sse = [
+			'event: message_start\ndata: {"type":"message_start","message":{"id":"msg_011CTest","stop_reason":null}}\n\n',
+			'event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"refusal"}}\n\n',
+			'event: message_stop\ndata: {"type":"message_stop"}\n\n',
+		].join("");
+		// Split mid-line to exercise chunk boundaries.
+		const bytes = encoder.encode(sse);
+		const body = new ReadableStream<Uint8Array>({
+			start(controller) {
+				controller.enqueue(bytes.slice(0, 57));
+				controller.enqueue(bytes.slice(57));
+				controller.close();
+			},
+		});
+		const { text, sentId } = await send(
+			new Response(body, {
+				status: 200,
+				headers: {
+					"request-id": "req_011CTest",
+					"content-type": "text/event-stream",
+				},
+			}),
+		);
+
+		expect(text).toBe(sse);
+		expect(await readLog()).toEqual([
 			expect.objectContaining({
 				requestId: "req_011CTest",
 				clientRequestId: sentId,
 				sessionId: "session-1",
-				status: 400,
+				status: 200,
+				messageId: "msg_011CTest",
+				stopReason: "refusal",
+			}),
+		]);
+	});
+
+	it("logs the message id and stop reason from a JSON response", async () => {
+		await send(
+			Response.json(
+				{ type: "message", id: "msg_json", stop_reason: "end_turn" },
+				{ headers: { "request-id": "req_json" } },
+			),
+		);
+		expect(await readLog()).toEqual([
+			expect.objectContaining({
+				requestId: "req_json",
+				messageId: "msg_json",
+				stopReason: "end_turn",
 			}),
 		]);
 	});

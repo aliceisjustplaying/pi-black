@@ -403,8 +403,7 @@ export function createClaudeCodeFetch(
 		}
 
 		const response = await sendClaudeCodeRequest(fetchImplementation, input, init, headers);
-		logAnthropicRequest(headers, response);
-		return response;
+		return logAnthropicRequest(headers, response);
 	};
 }
 
@@ -445,22 +444,125 @@ export function anthropicRequestLogPath(): string | undefined {
 	return configured || join(homedir(), ".pi", "agent", "anthropic-requests.jsonl");
 }
 
-function logAnthropicRequest(headers: Headers, response: Response): void {
-	const path = anthropicRequestLogPath();
-	if (!path) return;
+type AnthropicRequestLogEntry = {
+	ts: string;
+	requestId: string | null;
+	clientRequestId: string | null;
+	sessionId: string | null;
+	status: number;
+	messageId?: string;
+	stopReason?: string;
+	streamError?: string;
+};
+
+type ResponseSummary = { messageId?: string; stopReason?: string };
+
+function readResponseEvent(data: string, summary: ResponseSummary): void {
 	try {
-		const entry = {
-			ts: new Date().toISOString(),
-			requestId: response.headers.get("request-id"),
-			clientRequestId: headers.get("x-client-request-id"),
-			sessionId: headers.get("x-claude-code-session-id"),
-			status: response.status,
+		const event = JSON.parse(data) as {
+			type?: string;
+			id?: string;
+			stop_reason?: string | null;
+			message?: { id?: string; stop_reason?: string | null };
+			delta?: { stop_reason?: string | null };
 		};
+		const messageId = event.message?.id ?? (event.type === "message" ? event.id : undefined);
+		if (messageId) summary.messageId = messageId;
+		const stopReason =
+			event.delta?.stop_reason ?? event.message?.stop_reason ?? event.stop_reason;
+		if (stopReason) summary.stopReason = stopReason;
+	} catch {
+		// Not JSON; ignore.
+	}
+}
+
+function writeAnthropicRequestLog(path: string, entry: AnthropicRequestLogEntry): void {
+	try {
 		mkdirSync(dirname(path), { recursive: true });
 		appendFileSync(path, `${JSON.stringify(entry)}\n`);
 	} catch {
 		// Logging is best-effort.
 	}
+}
+
+/**
+ * Passes the response through unchanged and appends one log line when the body
+ * finishes, including the message id and stop reason read from the body (SSE or
+ * JSON). If the body is never read, nothing is buffered and the line is written
+ * when the stream is cancelled.
+ */
+function logAnthropicRequest(headers: Headers, response: Response): Response {
+	const path = anthropicRequestLogPath();
+	if (!path) return response;
+	const entry: AnthropicRequestLogEntry = {
+		ts: new Date().toISOString(),
+		requestId: response.headers.get("request-id"),
+		clientRequestId: headers.get("x-client-request-id"),
+		sessionId: headers.get("x-claude-code-session-id"),
+		status: response.status,
+	};
+	const finish = (summary: ResponseSummary, streamError?: string) =>
+		writeAnthropicRequestLog(path, {
+			...entry,
+			...summary,
+			...(streamError ? { streamError } : {}),
+		});
+	if (!response.body) {
+		finish({});
+		return response;
+	}
+
+	const summary: ResponseSummary = {};
+	const decoder = new TextDecoder();
+	const isJson = (response.headers.get("content-type") ?? "").includes("application/json");
+	let pending = "";
+	let done = false;
+	const scanLines = (flush: boolean) => {
+		if (isJson) {
+			if (flush) readResponseEvent(pending, summary);
+			return;
+		}
+		const lines = pending.split("\n");
+		pending = flush ? "" : (lines.pop() ?? "");
+		for (const line of lines) {
+			if (line.startsWith("data:")) readResponseEvent(line.slice(5).trim(), summary);
+		}
+	};
+	const complete = (streamError?: string) => {
+		if (done) return;
+		done = true;
+		finish(summary, streamError);
+	};
+	const reader = response.body.getReader();
+	const body = new ReadableStream<Uint8Array>({
+		async pull(controller) {
+			try {
+				const { value, done: finished } = await reader.read();
+				if (finished) {
+					pending += decoder.decode();
+					scanLines(true);
+					complete();
+					controller.close();
+					return;
+				}
+				pending += decoder.decode(value, { stream: true });
+				scanLines(false);
+				controller.enqueue(value);
+			} catch (error) {
+				complete(error instanceof Error ? error.message : String(error));
+				controller.error(error);
+			}
+		},
+		async cancel(reason) {
+			complete("cancelled");
+			await reader.cancel(reason);
+		},
+	});
+	return new Response(body, {
+		status: response.status,
+		statusText: response.statusText,
+		headers: response.headers,
+	});
 }
 
 export function claudeCodeHeaders(
