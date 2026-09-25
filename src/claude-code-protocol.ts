@@ -1,6 +1,7 @@
+import { appendFileSync, mkdirSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import type {
 	Context,
 	FetchFunction,
@@ -401,25 +402,65 @@ export function createClaudeCodeFetch(
 			if (isSafeHeaderValue(resolvedAtis)) headers.set("x-cc-atis", resolvedAtis);
 		}
 
-		if (typeof init?.body === "string") {
-			return fetchImplementation(input, {
-				...init,
-				headers,
-				body: patchClaudeCodeCch(init.body),
-			});
-		}
-		if (input instanceof Request) {
-			const body = await input.clone().text();
-			const request = new Request(input, {
-				headers,
-				body: patchClaudeCodeCch(body),
-			});
-			return fetchImplementation(request);
-		}
-		throw new Error(
-			"Pi Black OAuth request body is not available for cch patching",
-		);
+		const response = await sendClaudeCodeRequest(fetchImplementation, input, init, headers);
+		logAnthropicRequest(headers, response);
+		return response;
 	};
+}
+
+async function sendClaudeCodeRequest(
+	fetchImplementation: FetchFunction,
+	input: Parameters<FetchFunction>[0],
+	init: Parameters<FetchFunction>[1],
+	headers: Headers,
+): Promise<Response> {
+	if (typeof init?.body === "string") {
+		return fetchImplementation(input, {
+			...init,
+			headers,
+			body: patchClaudeCodeCch(init.body),
+		});
+	}
+	if (input instanceof Request) {
+		const body = await input.clone().text();
+		const request = new Request(input, {
+			headers,
+			body: patchClaudeCodeCch(body),
+		});
+		return fetchImplementation(request);
+	}
+	throw new Error(
+	"Pi Black OAuth request body is not available for cch patching",
+	);
+}
+
+/**
+ * Appends Anthropic's server-side `request-id` to a local JSONL log so refusals
+ * and errors can be reported to Anthropic. Set PI_BLACK_REQUEST_LOG to change the
+ * path, or to "off" to disable. Logging failures never affect the request.
+ */
+export function anthropicRequestLogPath(): string | undefined {
+	const configured = process.env.PI_BLACK_REQUEST_LOG;
+	if (configured === "off") return undefined;
+	return configured || join(homedir(), ".pi", "agent", "anthropic-requests.jsonl");
+}
+
+function logAnthropicRequest(headers: Headers, response: Response): void {
+	const path = anthropicRequestLogPath();
+	if (!path) return;
+	try {
+		const entry = {
+			ts: new Date().toISOString(),
+			requestId: response.headers.get("request-id"),
+			clientRequestId: headers.get("x-client-request-id"),
+			sessionId: headers.get("x-claude-code-session-id"),
+			status: response.status,
+		};
+		mkdirSync(dirname(path), { recursive: true });
+		appendFileSync(path, `${JSON.stringify(entry)}\n`);
+	} catch {
+		// Logging is best-effort.
+	}
 }
 
 export function claudeCodeHeaders(

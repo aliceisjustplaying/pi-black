@@ -1,8 +1,8 @@
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Context, Message } from "@earendil-works/pi-ai";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	buildClaudeCodeBillingHeader,
 	CLAUDE_CODE_VERSION,
@@ -18,6 +18,63 @@ import {
 } from "../src/claude-code-protocol.ts";
 
 const encoder = new TextEncoder();
+
+let requestLogDir: string;
+beforeEach(async () => {
+	requestLogDir = await mkdtemp(join(tmpdir(), "pi-black-log-"));
+	vi.stubEnv("PI_BLACK_REQUEST_LOG", join(requestLogDir, "requests.jsonl"));
+});
+afterEach(async () => {
+	vi.unstubAllEnvs();
+	await rm(requestLogDir, { recursive: true, force: true });
+});
+
+describe("Anthropic request log", () => {
+	it("records the server request-id with the session and client request ids", async () => {
+		const transport = vi.fn<typeof fetch>(
+			async () =>
+				new Response(null, {
+					status: 400,
+					headers: { "request-id": "req_011CTest" },
+				}),
+		);
+		await createClaudeCodeFetch(transport)(
+			"https://api.anthropic.com/v1/messages",
+			{
+				method: "POST",
+				headers: { "x-claude-code-session-id": "session-1" },
+				body: JSON.stringify({
+					model: "claude-opus-5-5",
+					max_tokens: 1,
+					system: [
+						{
+							type: "text",
+							text: "x-anthropic-billing-header: cc_version=2.1.280.000; cc_entrypoint=sdk-cli; cch=00000;",
+						},
+					],
+				}),
+			},
+		);
+
+		const lines = (
+			await readFile(join(requestLogDir, "requests.jsonl"), "utf8")
+		)
+			.trim()
+			.split("\n")
+			.map((line) => JSON.parse(line));
+		const sentId = new Headers(transport.mock.calls[0][1]?.headers).get(
+			"x-client-request-id",
+		);
+		expect(lines).toEqual([
+			expect.objectContaining({
+				requestId: "req_011CTest",
+				clientRequestId: sentId,
+				sessionId: "session-1",
+				status: 400,
+			}),
+		]);
+	});
+});
 const temporaryDirectories: string[] = [];
 const promptMessages = (prompt: string): Message[] => [
 	{ role: "user", content: prompt, timestamp: 1 },
