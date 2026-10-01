@@ -36,7 +36,7 @@ describe("Anthropic request log", () => {
 		system: [
 			{
 				type: "text",
-				text: "x-anthropic-billing-header: cc_version=2.1.280.000; cc_entrypoint=sdk-cli; cch=00000;",
+				text: "x-anthropic-billing-header: cc_version=2.1.286.000; cc_entrypoint=sdk-cli; cch=00000;",
 			},
 		],
 	});
@@ -169,13 +169,13 @@ describe("Claude Code protocol", () => {
 			await claudeCodeVersionFingerprint(
 				promptMessages("Reply with exactly: PROBE_OK"),
 			),
-		).toBe("022");
+		).toBe("cc7");
 		expect(
 			await buildClaudeCodeBillingHeader(
 				promptMessages("Reply with exactly: PROBE_OK"),
 			),
 		).toBe(
-			"x-anthropic-billing-header: cc_version=2.1.280.022; cc_entrypoint=sdk-cli; cch=00000;",
+			"x-anthropic-billing-header: cc_version=2.1.286.cc7; cc_entrypoint=sdk-cli; cch=00000;",
 		);
 	});
 
@@ -248,7 +248,7 @@ describe("Claude Code protocol", () => {
 		const system = payload.system as Array<Record<string, unknown>>;
 		expect(system[0]).toEqual({
 			type: "text",
-			text: "x-anthropic-billing-header: cc_version=2.1.280.022; cc_entrypoint=sdk-cli; cch=00000;",
+			text: "x-anthropic-billing-header: cc_version=2.1.286.cc7; cc_entrypoint=sdk-cli; cch=00000;",
 		});
 		expect(system[1]).toEqual({
 			type: "text",
@@ -372,7 +372,7 @@ describe("Claude Code protocol", () => {
 			system: [
 				{
 					type: "text",
-					text: "x-anthropic-billing-header: cc_version=2.1.280.000; cc_entrypoint=sdk-cli; cch=00000;",
+					text: "x-anthropic-billing-header: cc_version=2.1.286.000; cc_entrypoint=sdk-cli; cch=00000;",
 				},
 				{ type: "text", text: "fake cch=00000" },
 			],
@@ -403,7 +403,7 @@ describe("Claude Code protocol", () => {
 			system: [
 				{
 					type: "text",
-					text: "x-anthropic-billing-header: cc_version=2.1.280.000; cc_entrypoint=sdk-cli; cch=abc12;",
+					text: "x-anthropic-billing-header: cc_version=2.1.286.000; cc_entrypoint=sdk-cli; cch=abc12;",
 				},
 			],
 		});
@@ -419,7 +419,7 @@ describe("Claude Code protocol", () => {
 			system: [
 				{
 					type: "text",
-					text: "x-anthropic-billing-header: cc_version=2.1.280.000; cc_entrypoint=sdk-cli; cch=00000;",
+					text: "x-anthropic-billing-header: cc_version=2.1.286.000; cc_entrypoint=sdk-cli; cch=00000;",
 				},
 			],
 		});

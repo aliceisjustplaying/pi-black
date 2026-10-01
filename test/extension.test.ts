@@ -73,7 +73,7 @@ describe("Anthropic request recording", () => {
 					body: JSON.stringify({
 						model: "claude-opus-5-5",
 						max_tokens: 1,
-						system: [{ type: "text", text: "x-anthropic-billing-header: cc_version=2.1.280.000; cc_entrypoint=sdk-cli; cch=00000;" }],
+						system: [{ type: "text", text: "x-anthropic-billing-header: cc_version=2.1.286.000; cc_entrypoint=sdk-cli; cch=00000;" }],
 					}),
 				}).then((response) => response.text());
 			await request("session-1");

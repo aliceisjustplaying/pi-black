@@ -10,7 +10,7 @@ import type {
 	StreamOptions,
 } from "@earendil-works/pi-ai";
 
-export const CLAUDE_CODE_VERSION = "2.1.280";
+export const CLAUDE_CODE_VERSION = "2.1.286";
 export const CLAUDE_CODE_ENTRYPOINT = "sdk-cli";
 
 const CCH_PLACEHOLDER = "cch=00000";
@@ -31,8 +31,12 @@ const CLAUDE_CODE_MODEL_CONTEXTS: Record<string, string> = {
 		"You are powered by the model named Fable 5.1. The exact model ID is claude-fable-5-1. Assistant knowledge cutoff is June 2026.",
 	"claude-opus-5":
 		"You are powered by the model named Opus 5. The exact model ID is claude-opus-5. Assistant knowledge cutoff is May 2026.",
+	"claude-opus-5-5":
+		"You are powered by the model named Opus 5.5. The exact model ID is claude-opus-5-5. Assistant knowledge cutoff is June 2026.",
 	"claude-sonnet-5":
 		"You are powered by the model named Sonnet 5. The exact model ID is claude-sonnet-5. Assistant knowledge cutoff is January 2026.",
+	"claude-sonnet-5-5":
+		"You are powered by the model named Sonnet 5.5. The exact model ID is claude-sonnet-5-5. Assistant knowledge cutoff is June 2026.",
 };
 
 export interface ClaudeCodeIdentity {
