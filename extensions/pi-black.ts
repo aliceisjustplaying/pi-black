@@ -1,11 +1,37 @@
+import { execFile } from "node:child_process";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { promisify } from "node:util";
 import { builtinProviders } from "@earendil-works/pi-ai/providers/all";
-import { type ExtensionAPI, VERSION } from "@earendil-works/pi-coding-agent";
+import {
+	type ExtensionAPI,
+	type ExtensionCommandContext,
+	VERSION,
+} from "@earendil-works/pi-coding-agent";
+import {
+	buildFeedbackPayload,
+	buildReport,
+	collectRequests,
+	feedbackBody,
+	isPiBlackMessageType,
+	REPORT_MESSAGE_TYPE,
+	REQUEST_MESSAGE_TYPE,
+	requestMessageContent,
+	type SessionEntry,
+	submitFeedback,
+} from "../src/anthropic-feedback.ts";
 import { wrapAnthropicProvider } from "../src/anthropic-provider.ts";
-import { discoverClaudeCodeIdentity } from "../src/claude-code-protocol.ts";
+import {
+	discoverClaudeCodeIdentity,
+	onAnthropicRequestLogged,
+} from "../src/claude-code-protocol.ts";
 import {
 	isSupportedPiVersion,
 	MINIMUM_SUPPORTED_PI_VERSION,
 } from "../src/compatibility.ts";
+
+const run = promisify(execFile);
 
 export default function piBlack(pi: ExtensionAPI): void {
 	if (!isSupportedPiVersion(VERSION)) {
@@ -21,4 +47,134 @@ export default function piBlack(pi: ExtensionAPI): void {
 	pi.registerProvider(
 		wrapAnthropicProvider(anthropic, discoverClaudeCodeIdentity()),
 	);
+	registerAnthropicRequestRecording(pi);
+}
+
+/**
+ * Records each Anthropic request of the session (Anthropic's request and message ids,
+ * stop_details, usage, errors) as a hidden session message, kept out of model context,
+ * and adds /share-ant-pi and /share-ant-native for reporting a session to Anthropic.
+ */
+function registerAnthropicRequestRecording(pi: ExtensionAPI): void {
+	let sessionId: string | undefined;
+	let stopListening: (() => void) | undefined;
+
+	pi.on("session_start", (_event, ctx) => {
+		sessionId = ctx.sessionManager.getSessionId();
+		stopListening ??= onAnthropicRequestLogged((entry) => {
+			if (!sessionId || entry.sessionId !== sessionId) return;
+			// While a turn streams, pi holds this until the turn ends.
+			pi.sendMessage(
+				{
+					customType: REQUEST_MESSAGE_TYPE,
+					content: requestMessageContent(entry),
+					display: false,
+					details: entry,
+				},
+				{ triggerTurn: false },
+			);
+		});
+	});
+	pi.on("session_shutdown", () => {
+		stopListening?.();
+		stopListening = undefined;
+		sessionId = undefined;
+	});
+
+	pi.on("context", (event) => {
+		const messages = event.messages.filter(
+			(message) => !(message.role === "custom" && isPiBlackMessageType(message.customType)),
+		);
+		return messages.length === event.messages.length ? undefined : { messages };
+	});
+
+	const appendReport = (ctx: ExtensionCommandContext, extra = "") => {
+		const id = ctx.sessionManager.getSessionId();
+		const entries = ctx.sessionManager.getBranch() as unknown as SessionEntry[];
+		const requests = collectRequests(id, entries);
+		pi.sendMessage(
+			{
+				customType: REPORT_MESSAGE_TYPE,
+				content: buildReport(id, requests, entries) + extra,
+				display: true,
+				details: { requests },
+			},
+			{ triggerTurn: false },
+		);
+		return requests;
+	};
+
+	pi.registerCommand("share-ant-pi", {
+		description:
+			"Share the session as a private gist, like /share, with a visible report of every Anthropic request id, message id and refusal",
+		handler: async (_args, ctx) => {
+			await ctx.waitForIdle();
+			const requests = appendReport(ctx);
+			const sessionFile = ctx.sessionManager.getSessionFile();
+			if (!sessionFile) {
+				ctx.ui.notify("This session has no session file to share", "error");
+				return;
+			}
+			const dir = mkdtempSync(join(tmpdir(), "pi-share-ant-"));
+			try {
+				const html = join(dir, "session.html");
+				await run("pi", ["--export", sessionFile, html]);
+				const { stdout } = await run("gh", ["gist", "create", "--public=false", html]);
+				const gistId = stdout.trim().split("/").pop();
+				if (!gistId) throw new Error(`could not read the gist id from: ${stdout}`);
+				const viewer = process.env.PI_SHARE_VIEWER_URL || "https://pi.dev/session/";
+				ctx.ui.notify(
+					`Share URL: ${viewer}#${gistId} (${requests.length} Anthropic requests in the report)`,
+					"info",
+				);
+			} catch (error) {
+				ctx.ui.notify(`Share failed: ${error instanceof Error ? error.message : String(error)}`, "error");
+			} finally {
+				rmSync(dir, { recursive: true, force: true });
+			}
+		},
+	});
+
+	pi.registerCommand("share-ant-native", {
+		description:
+			"Send the session to Anthropic's Claude Code /feedback endpoint, labeled as pi, with every request id, message id and refusal",
+		handler: async (args, ctx) => {
+			await ctx.waitForIdle();
+			const description =
+				args.trim() || (await ctx.ui.input("What went wrong?", "e.g. false-positive refusal"))?.trim();
+			if (!description) {
+				ctx.ui.notify("Cancelled: a description is required", "warning");
+				return;
+			}
+			const id = ctx.sessionManager.getSessionId();
+			const payload = buildFeedbackPayload({
+				sessionId: id,
+				sessionFile: ctx.sessionManager.getSessionFile(),
+				cwd: ctx.cwd,
+				entries: ctx.sessionManager.getBranch() as unknown as SessionEntry[],
+				description,
+				piVersion: VERSION,
+			});
+			const body = feedbackBody(payload, id);
+			const requests = (payload.anthropicRequests as unknown[]).length;
+			const ok = await ctx.ui.confirm(
+				"Send to Anthropic?",
+				`This sends the session transcript (${Math.round(Buffer.byteLength(body) / 1024)} KB, ${requests} request ids) to ` +
+					"Anthropic's Claude Code feedback endpoint, where feedback transcripts are kept for 5 years.",
+			);
+			if (!ok) return;
+			const token = await ctx.modelRegistry.getApiKeyForProvider("anthropic");
+			if (!token?.includes("sk-ant-oat")) {
+				ctx.ui.notify("The feedback endpoint needs Anthropic OAuth (a Claude subscription login)", "error");
+				return;
+			}
+			const result = await submitFeedback(body, token, `pi-black (pi ${VERSION})`);
+			if ("error" in result) {
+				ctx.ui.notify(`Feedback failed: ${result.error}`, "error");
+				return;
+			}
+			appendReport(ctx, `\n\nSent to Anthropic as feedback \`${result.feedbackId}\`.`);
+			ctx.ui.notify(`Sent to Anthropic: feedback id ${result.feedbackId}`, "info");
+		},
+	});
 }

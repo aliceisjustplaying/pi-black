@@ -444,36 +444,90 @@ export function anthropicRequestLogPath(): string | undefined {
 	return configured || join(homedir(), ".pi", "agent", "anthropic-requests.jsonl");
 }
 
-type AnthropicRequestLogEntry = {
+export type AnthropicRequestLogEntry = {
 	ts: string;
+	/** Anthropic's `request-id` response header (`req_…`). */
 	requestId: string | null;
+	/** Pi Black's own `x-client-request-id`, not an Anthropic id. */
 	clientRequestId: string | null;
 	sessionId: string | null;
 	status: number;
+	/** Anthropic's message id (`msg_…`) from the response body. */
 	messageId?: string;
+	model?: string;
 	stopReason?: string;
+	/** `stop_details` as Anthropic sent it (refusal type, category, explanation). */
+	stopDetails?: Record<string, unknown>;
+	usage?: Record<string, unknown>;
+	/** An `error` object from an error body or an SSE `error` event. */
+	error?: Record<string, unknown>;
+	/** Diagnostic response headers (`anthropic-*`, `cf-ray`, `retry-after`, `x-should-retry`). */
+	responseHeaders?: Record<string, string>;
 	streamError?: string;
 };
 
-type ResponseSummary = { messageId?: string; stopReason?: string };
+type ResponseSummary = Pick<
+	AnthropicRequestLogEntry,
+	"messageId" | "model" | "stopReason" | "stopDetails" | "usage" | "error"
+>;
+
+const requestLogListeners = new Set<(entry: AnthropicRequestLogEntry) => void>();
+
+/** Calls `listener` with each finished Anthropic request, whether or not the file log is on. */
+export function onAnthropicRequestLogged(
+	listener: (entry: AnthropicRequestLogEntry) => void,
+): () => void {
+	requestLogListeners.add(listener);
+	return () => requestLogListeners.delete(listener);
+}
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+	typeof value === "object" && value !== null && !Array.isArray(value);
+
+// Claude Code deletes this before keeping stop_details; it is a credential, not metadata.
+function withoutCreditToken(details: Record<string, unknown>): Record<string, unknown> {
+	const { fallback_credit_token: _, ...rest } = details;
+	return rest;
+}
 
 function readResponseEvent(data: string, summary: ResponseSummary): void {
+	let event: unknown;
 	try {
-		const event = JSON.parse(data) as {
-			type?: string;
-			id?: string;
-			stop_reason?: string | null;
-			message?: { id?: string; stop_reason?: string | null };
-			delta?: { stop_reason?: string | null };
-		};
-		const messageId = event.message?.id ?? (event.type === "message" ? event.id : undefined);
-		if (messageId) summary.messageId = messageId;
-		const stopReason =
-			event.delta?.stop_reason ?? event.message?.stop_reason ?? event.stop_reason;
-		if (stopReason) summary.stopReason = stopReason;
+		event = JSON.parse(data);
 	} catch {
-		// Not JSON; ignore.
+		return; // Not JSON; ignore.
 	}
+	if (!isRecord(event)) return;
+	// message_start carries the message; a non-streamed response is the message itself.
+	const message = isRecord(event.message) ? event.message : event.type === "message" ? event : undefined;
+	const delta = isRecord(event.delta) ? event.delta : undefined;
+	if (message) {
+		if (typeof message.id === "string") summary.messageId = message.id;
+		if (typeof message.model === "string") summary.model = message.model;
+	}
+	for (const source of [message, delta]) {
+		if (!source) continue;
+		if (typeof source.stop_reason === "string") summary.stopReason = source.stop_reason;
+		if (isRecord(source.stop_details))
+			summary.stopDetails = withoutCreditToken(source.stop_details);
+	}
+	const usage = isRecord(event.usage) ? event.usage : message && isRecord(message.usage) ? message.usage : undefined;
+	if (usage) summary.usage = { ...summary.usage, ...usage };
+	if (event.type === "error" && isRecord(event.error)) summary.error = event.error;
+}
+
+function diagnosticHeaders(headers: Headers): Record<string, string> | undefined {
+	const kept: Record<string, string> = {};
+	for (const [name, value] of headers) {
+		if (
+			name.startsWith("anthropic-") ||
+			name === "cf-ray" ||
+			name === "retry-after" ||
+			name === "x-should-retry"
+		)
+			kept[name] = value;
+	}
+	return Object.keys(kept).length > 0 ? kept : undefined;
 }
 
 function writeAnthropicRequestLog(path: string, entry: AnthropicRequestLogEntry): void {
@@ -493,20 +547,27 @@ function writeAnthropicRequestLog(path: string, entry: AnthropicRequestLogEntry)
  */
 function logAnthropicRequest(headers: Headers, response: Response): Response {
 	const path = anthropicRequestLogPath();
-	if (!path) return response;
+	if (!path && requestLogListeners.size === 0) return response;
+	const responseHeaders = diagnosticHeaders(response.headers);
 	const entry: AnthropicRequestLogEntry = {
 		ts: new Date().toISOString(),
 		requestId: response.headers.get("request-id"),
 		clientRequestId: headers.get("x-client-request-id"),
 		sessionId: headers.get("x-claude-code-session-id"),
 		status: response.status,
+		...(responseHeaders ? { responseHeaders } : {}),
 	};
-	const finish = (summary: ResponseSummary, streamError?: string) =>
-		writeAnthropicRequestLog(path, {
-			...entry,
-			...summary,
-			...(streamError ? { streamError } : {}),
-		});
+	const finish = (summary: ResponseSummary, streamError?: string) => {
+		const finished = { ...entry, ...summary, ...(streamError ? { streamError } : {}) };
+		if (path) writeAnthropicRequestLog(path, finished);
+		for (const listener of requestLogListeners) {
+			try {
+				listener(finished);
+			} catch {
+				// Listeners are best-effort, like the file log.
+			}
+		}
+	};
 	if (!response.body) {
 		finish({});
 		return response;

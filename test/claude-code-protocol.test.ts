@@ -63,8 +63,8 @@ describe("Anthropic request log", () => {
 
 	it("logs ids and the stop reason from a streamed refusal without altering the stream", async () => {
 		const sse = [
-			'event: message_start\ndata: {"type":"message_start","message":{"id":"msg_011CTest","stop_reason":null}}\n\n',
-			'event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"refusal"}}\n\n',
+			'event: message_start\ndata: {"type":"message_start","message":{"id":"msg_011CTest","model":"claude-opus-5-5","stop_reason":null,"usage":{"input_tokens":2}}}\n\n',
+			'event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"refusal","stop_details":{"type":"refusal","category":"reasoning_extraction","explanation":"blocked","fallback_credit_token":"secret"}},"usage":{"output_tokens":237}}\n\n',
 			'event: message_stop\ndata: {"type":"message_stop"}\n\n',
 		].join("");
 		// Split mid-line to exercise chunk boundaries.
@@ -82,6 +82,9 @@ describe("Anthropic request log", () => {
 				headers: {
 					"request-id": "req_011CTest",
 					"content-type": "text/event-stream",
+					"anthropic-organization-id": "org-1",
+					"cf-ray": "ray-1",
+					"set-cookie": "not-kept",
 				},
 			}),
 		);
@@ -94,7 +97,27 @@ describe("Anthropic request log", () => {
 				sessionId: "session-1",
 				status: 200,
 				messageId: "msg_011CTest",
+				model: "claude-opus-5-5",
 				stopReason: "refusal",
+				stopDetails: { type: "refusal", category: "reasoning_extraction", explanation: "blocked" },
+				usage: { input_tokens: 2, output_tokens: 237 },
+				responseHeaders: { "anthropic-organization-id": "org-1", "cf-ray": "ray-1" },
+			}),
+		]);
+	});
+
+	it("logs the error object of an error response", async () => {
+		await send(
+			Response.json(
+				{ type: "error", error: { type: "invalid_request_error", message: "bad" }, request_id: "req_err" },
+				{ status: 400, headers: { "request-id": "req_err" } },
+			),
+		);
+		expect(await readLog()).toEqual([
+			expect.objectContaining({
+				requestId: "req_err",
+				status: 400,
+				error: { type: "invalid_request_error", message: "bad" },
 			}),
 		]);
 	});
