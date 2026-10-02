@@ -17,7 +17,6 @@ import {
 	isPiBlackMessageType,
 	REPORT_MESSAGE_TYPE,
 	REQUEST_MESSAGE_TYPE,
-	requestMessageContent,
 	type SessionEntry,
 	submitFeedback,
 } from "../src/anthropic-feedback.ts";
@@ -53,8 +52,12 @@ export default function piBlack(pi: ExtensionAPI): void {
 
 /**
  * Records each Anthropic request of the session (Anthropic's request and message ids,
- * stop_details, usage, errors) as a hidden session message, kept out of model context,
- * and adds /share-ant-pi and /share-ant-native for reporting a session to Anthropic.
+ * stop_details, usage, errors) as a custom session entry, and adds /share-ant-pi and
+ * /share-ant-native for reporting a session to Anthropic.
+ *
+ * An entry, not a message: an entry is never model context, and it leaves the assistant's
+ * reply as the run's last message. `pi --print` prints only when the last message is the
+ * assistant's, so a message sent after the reply made it print nothing (exit 0).
  */
 function registerAnthropicRequestRecording(pi: ExtensionAPI): void {
 	let sessionId: string | undefined;
@@ -64,16 +67,7 @@ function registerAnthropicRequestRecording(pi: ExtensionAPI): void {
 		sessionId = ctx.sessionManager.getSessionId();
 		stopListening ??= onAnthropicRequestLogged((entry) => {
 			if (!sessionId || entry.sessionId !== sessionId) return;
-			// While a turn streams, pi holds this until the turn ends.
-			pi.sendMessage(
-				{
-					customType: REQUEST_MESSAGE_TYPE,
-					content: requestMessageContent(entry),
-					display: false,
-					details: entry,
-				},
-				{ triggerTurn: false },
-			);
+			pi.appendEntry(REQUEST_MESSAGE_TYPE, entry);
 		});
 	});
 	pi.on("session_shutdown", () => {
@@ -82,6 +76,7 @@ function registerAnthropicRequestRecording(pi: ExtensionAPI): void {
 		sessionId = undefined;
 	});
 
+	// Earlier sessions hold the requests as hidden messages, and a report is a message.
 	pi.on("context", (event) => {
 		const messages = event.messages.filter(
 			(message) => !(message.role === "custom" && isPiBlackMessageType(message.customType)),

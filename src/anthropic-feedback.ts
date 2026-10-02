@@ -44,6 +44,7 @@ export type SessionEntry = {
 	message?: SessionMessage;
 	customType?: string;
 	details?: unknown;
+	data?: unknown;
 };
 
 export const formatRequest = (entry: AnthropicRequestLogEntry): string => {
@@ -63,13 +64,6 @@ const isProblem = (entry: AnthropicRequestLogEntry): boolean =>
 	entry.error !== undefined ||
 	entry.streamError !== undefined;
 
-export function requestMessageContent(entry: AnthropicRequestLogEntry): string {
-	const details = entry.stopDetails ?? entry.error;
-	return [
-		`Anthropic ${formatRequest(entry)}`,
-		...(details ? ["", "```json", JSON.stringify(details, null, 2), "```"] : []),
-	].join("\n");
-}
 
 function readLoggedRequests(sessionId: string): AnthropicRequestLogEntry[] {
 	const path = anthropicRequestLogPath();
@@ -88,8 +82,8 @@ function readLoggedRequests(sessionId: string): AnthropicRequestLogEntry[] {
 }
 
 /**
- * Every Anthropic request of the session, oldest first: the request messages recorded in
- * the session, then the JSONL log (requests made before recording existed, or by another
+ * Every Anthropic request of the session, oldest first: the requests recorded in the
+ * session (custom entries; hidden messages in earlier sessions), then the JSONL log (requests made before recording existed, or by another
  * process), keyed by Anthropic's request id. Assistant messages without either still
  * contribute Anthropic's message id.
  */
@@ -111,6 +105,8 @@ export function collectRequests(
 			add(message.details as AnthropicRequestLogEntry);
 		else if (entry.type === "custom_message" && entry.customType === REQUEST_MESSAGE_TYPE)
 			add(entry.details as AnthropicRequestLogEntry);
+		else if (entry.type === "custom" && entry.customType === REQUEST_MESSAGE_TYPE)
+			add(entry.data as AnthropicRequestLogEntry);
 	}
 	const known = new Set([...byKey.values()].map((entry) => entry.messageId));
 	for (const entry of entries) {

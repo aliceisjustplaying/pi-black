@@ -46,15 +46,17 @@ describe("Pi Black extension", () => {
 });
 
 describe("Anthropic request recording", () => {
-	it("records each request of the session as a hidden message kept out of model context", async () => {
+	it("records each request of the session as a custom entry, sends no message, and keeps earlier hidden messages out of model context", async () => {
 		const dir = await mkdtemp(join(tmpdir(), "pi-black-ext-"));
 		vi.stubEnv("PI_BLACK_REQUEST_LOG", join(dir, "requests.jsonl"));
 		const handlers = new Map<string, (event: unknown, ctx: unknown) => unknown>();
 		const sendMessage = vi.fn();
+		const appendEntry = vi.fn();
 		const pi = {
 			registerProvider: vi.fn(),
 			registerCommand: vi.fn(),
 			sendMessage,
+			appendEntry,
 			on: (name: string, handler: (event: unknown, ctx: unknown) => unknown) => handlers.set(name, handler),
 		};
 		try {
@@ -79,18 +81,16 @@ describe("Anthropic request recording", () => {
 			await request("session-1");
 			await request("other-session");
 
-			expect(sendMessage).toHaveBeenCalledOnce();
-			const [message, options] = sendMessage.mock.calls[0];
-			expect(options).toEqual({ triggerTurn: false });
-			expect(message).toMatchObject({
-				customType: "pi-black.anthropic-request",
-				display: false,
-				details: { requestId: "req_session-1", messageId: "msg_session-1", stopReason: "refusal" },
-			});
-			expect(message.content).toContain("req_session-1");
+			// A message after the reply would be the run's last message, and `pi --print` prints
+			// only when the last message is the assistant's.
+			expect(sendMessage).not.toHaveBeenCalled();
+			expect(appendEntry).toHaveBeenCalledOnce();
+			const [customType, data] = appendEntry.mock.calls[0];
+			expect(customType).toBe("pi-black.anthropic-request");
+			expect(data).toMatchObject({ requestId: "req_session-1", messageId: "msg_session-1", stopReason: "refusal" });
 
 			const user = { role: "user", content: "hi", timestamp: 1 };
-			const recorded = { role: "custom", ...message, timestamp: 2 };
+			const recorded = { role: "custom", customType, content: "Anthropic req_session-1", display: false, details: data, timestamp: 2 };
 			expect(handlers.get("context")?.({ messages: [user, recorded] }, {})).toEqual({ messages: [user] });
 		} finally {
 			handlers.get("session_shutdown")?.({}, {});

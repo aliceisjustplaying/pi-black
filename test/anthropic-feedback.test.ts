@@ -2,7 +2,11 @@ import { describe, expect, it, vi } from "vitest";
 import { buildFeedbackPayload, feedbackBody, type SessionEntry } from "../src/anthropic-feedback.ts";
 
 describe("Anthropic feedback payload", () => {
-	it("gives the refused turn Anthropic's request id, message id and stop_details", () => {
+	// How the request is recorded in the session: a custom entry now; earlier sessions hold a hidden message.
+	it.each([
+		["a custom entry", (request: object) => ({ type: "custom", data: request })],
+		["a hidden message of an earlier session", (request: object) => ({ type: "custom_message", details: request })],
+	])("gives the refused turn Anthropic's request id, message id and stop_details, from %s", (_form, recorded) => {
 		vi.stubEnv("PI_BLACK_REQUEST_LOG", "off");
 		const sessionId = "01a0f432-30fc-748f-86a1-0e9342b5570d";
 		const entries: SessionEntry[] = [
@@ -22,12 +26,11 @@ describe("Anthropic feedback payload", () => {
 				},
 			},
 			{
-				type: "custom_message",
 				id: "c1",
 				parentId: "a1",
 				timestamp: "t3",
 				customType: "pi-black.anthropic-request",
-				details: {
+				...recorded({
 					ts: "t2",
 					requestId: "req_refused",
 					clientRequestId: "ours",
@@ -36,7 +39,7 @@ describe("Anthropic feedback payload", () => {
 					messageId: "msg_refused",
 					stopReason: "refusal",
 					stopDetails: { type: "refusal", category: "reasoning_extraction" },
-				},
+				}),
 			},
 		];
 		const payload = buildFeedbackPayload({
