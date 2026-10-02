@@ -2,7 +2,7 @@
 
 Use your Claude Max (or Pro) subscription with Pi.
 
-Pi Black is an unofficial Pi package that routes Anthropic OAuth requests through your existing Claude subscription usage by applying Claude Code 2.1.287 request conventions. The existing source patch and standalone-binary build system remain available as a fallback.
+Pi Black is an unofficial Pi package that routes Anthropic OAuth requests through your existing Claude subscription usage by applying Claude Code 2.1.287 request conventions.
 
 ## Install
 
@@ -11,10 +11,11 @@ Pi Black has three independently versioned compatibility surfaces:
 | Component | Compatible version |
 | --- | --- |
 | Pi package | Pi 1.0.0 or newer |
-| Standalone `pi-black` binary | Based on Pi 0.84.1 |
 | Claude Code protocol | 2.1.287 |
 
-The Pi package requires Pi 1.0.0 or newer, with no upper version limit. Future Pi releases are trusted until an incompatibility is identified; the package peer dependencies are `"*"` because Pi supplies its core packages at runtime. The standalone binary is built from the separately pinned Pi 0.84.1 source and does not track the package's minimum.
+The Pi package requires Pi 1.0.0 or newer, with no upper version limit. Future Pi releases are trusted until an incompatibility is identified; the package peer dependencies are `"*"` because Pi supplies its core packages at runtime.
+
+Pi Black is a Pi extension only. The earlier standalone native build and its patch series have been removed; see [Migrating from the patch series](#migrating-from-the-patch-series).
 
 ```sh
 pi install git:github.com/aliceisjustplaying/pi-black
@@ -29,7 +30,7 @@ pi update --extensions
 For a reproducible install, pin a release tag:
 
 ```sh
-pi install git:github.com/paoloanzn/pi-black@v0.84.1-cc2.1.258.1
+pi install git:github.com/aliceisjustplaying/pi-black@v0.1.0
 ```
 
 Pinned packages do not move automatically. Install a newer tagged ref explicitly when you are ready to upgrade.
@@ -61,7 +62,7 @@ For Anthropic OAuth requests, Pi Black reproduces the version-specific SDK-CLI r
 - structure-aware `cch` calculation using seeded XXH64;
 - per-request `x-client-request-id` values;
 - Claude Code session headers, including the latched `x-cc-atis` assignment for first-party requests;
-- verified model identity and knowledge-cutoff context for Fable 5.1, Opus 5 and Sonnet 5;
+- verified model identity and knowledge-cutoff context for Fable 5.1, Opus 5, Opus 5.5, Sonnet 5 and Sonnet 5.5;
 - automatically discovered identity metadata when available.
 
 The checksum implementation validates and updates only the first billing system block. User content, tool results, descriptions, and nested `model` or `max_tokens` fields cannot redirect the placeholder patch.
@@ -75,42 +76,22 @@ npm run check
 
 Public CI uses fake transports only. It never makes provider requests and requires no credentials.
 
-## Standalone installer and binaries
+## Migrating from the patch series
 
-The Pi package is the recommended installation. macOS and Linux users who prefer the standalone patched build can install the latest native release as `pi-black`:
+Pi Black used to ship two surfaces: the Pi package, and a patch series under `patches/` that rewrote `packages/ai/src/api/anthropic-claude-code.ts` inside Pi's own source to build a standalone native binary.
 
-```sh
-curl -fsSL https://github.com/paoloanzn/pi-black/releases/latest/download/install.sh | sh
-```
+The patch series duplicated every behavior the package already implemented in `src/`, and it stopped tracking it. At removal it still declared Claude Code protocol `2.1.277` against the package's `2.1.287`, and still carried a process-wide ATIS latch that suppressed `x-cc-atis` for one model whenever a model with no assignment made the first request. Every fix had to be written twice, and the second copy silently drifted.
 
-The installed launcher checks the latest release checksum at interactive startup. If the installed build differs, it offers to update before starting Pi Black. Downloads are checksum-verified; network-check failures are silent, while a rejected or failed update continues with the installed build. Set `PI_BLACK_NO_UPDATE_CHECK=1` to disable this check; Pi's `PI_OFFLINE=1` also disables it.
-
-Install a specific standalone release with `PI_BLACK_RELEASE`:
+It is removed along with `install.sh`, `launcher.sh`, `config/pi.env`, `BUILD.md`, `RELEASE.md` and the standalone release workflow. There is no standalone binary to install. Use the package:
 
 ```sh
-curl -fsSL https://github.com/paoloanzn/pi-black/releases/latest/download/install.sh | PI_BLACK_RELEASE=v0.84.1-cc2.1.258.1 sh
+pi install git:github.com/aliceisjustplaying/pi-black
 ```
 
-The repository pins an immutable commit from [`paoloanzn/pi`](https://github.com/paoloanzn/pi), applies the patch under `patches/`, and delegates standalone compilation to Pi's release builder.
-
-```sh
-./scripts/verify.sh
-./scripts/build-all.sh "$PWD/out"
-```
-
-Manual patch application:
-
-```sh
-git clone https://github.com/paoloanzn/pi.git pi
-cd pi
-git checkout --detach 7aca0d7b3e041a9e2b635e8370b2549f032932d6
-git am ../pi-black/patches/*.patch
-```
-
-Build requirements and repeatability limits are in [`BUILD.md`](BUILD.md).
+If you previously installed a `pi-black` binary through `install.sh`, remove it and install the package instead. Your Claude Code login is untouched; `/login anthropic` still applies.
 
 ## Status and terms
 
 This project is unofficial and is not affiliated with or endorsed by Anthropic or the upstream Pi project. Users must provide their own valid account credentials and determine whether use complies with applicable service terms. The compatibility mechanism is version-specific and must be revalidated when Claude Code or Pi changes.
 
-No OAuth tokens, identifiers, captures, or private Claude state are included in the package or release artifacts. Pi and the derived patch are distributed under the MIT license; see [`LICENSE`](LICENSE).
+No OAuth tokens, identifiers, captures, or private Claude state are included in the package. Pi Black is distributed under the MIT license; see [`LICENSE`](LICENSE).
