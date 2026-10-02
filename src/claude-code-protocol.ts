@@ -430,7 +430,12 @@ async function sendClaudeCodeRequest(
 	}
 	if (input instanceof Request) {
 		const body = await input.clone().text();
+		// The Request constructor folds init's signal, redirect, credentials and
+		// cache into the new Request. Omitting init here discarded them, so an
+		// abort signal never reached the transport and redirect policy silently
+		// reverted to "follow".
 		const request = new Request(input, {
+			...init,
 			headers,
 			body: patchClaudeCodeCch(body),
 		});

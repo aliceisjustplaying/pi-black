@@ -514,4 +514,42 @@ describe("Claude Code protocol", () => {
 		// ASCII, so anything outside it is not an assignment we should forward.
 		expect(parseClaudeCodeAtis({ clientDataCacheSlots: { s: { at: 1, model: "m", data: { atis: "caf\u00e9" } } } }, "m")).toBeUndefined();
 	});
+
+	it("carries RequestInit options through when the body arrives as a Request", async () => {
+		// This path used to rebuild the Request without init, so an abort signal
+		// and redirect policy were dropped before reaching the transport.
+		const transport = vi.fn<typeof fetch>(
+			async () => new Response(null, { status: 200 }),
+		);
+		const requestBody = JSON.stringify({
+			model: "claude-opus-5",
+			messages: [],
+			max_tokens: 1,
+			stream: true,
+			system: [
+				{
+					type: "text",
+					text: "x-anthropic-billing-header: cc_version=2.1.287.000; cc_entrypoint=sdk-cli; cch=00000;",
+				},
+			],
+		});
+		const input = new Request("https://api.anthropic.com/v1/messages", {
+			method: "POST",
+			body: requestBody,
+		});
+		const controller = new AbortController();
+		controller.abort();
+		await createClaudeCodeFetch(transport, Promise.resolve("0123456789abcdef"))(input, {
+			signal: controller.signal,
+			redirect: "error",
+		});
+
+		expect(transport).toHaveBeenCalledOnce();
+		const sent = transport.mock.calls[0][0] as Request;
+		expect(sent).toBeInstanceOf(Request);
+		expect(sent.signal.aborted).toBe(true);
+		expect(sent.redirect).toBe("error");
+		expect(sent.headers.get("x-cc-atis")).toBe("0123456789abcdef");
+		expect(await sent.text()).not.toContain("cch=00000");
+	});
 });
