@@ -28,17 +28,17 @@ describe("Pi Black extension", () => {
 	});
 
 	it("supports the minimum Pi version and newer stable versions", () => {
-		expect(MINIMUM_SUPPORTED_PI_VERSION).toBe("0.84.1");
-		for (const version of ["0.84.1", "0.84.4", "0.85.0", "1.0.0"])
+		expect(MINIMUM_SUPPORTED_PI_VERSION).toBe("1.0.0");
+		for (const version of ["1.0.0", "1.0.1", "1.2.0", "2.0.0"])
 			expect(isSupportedPiVersion(version)).toBe(true);
 	});
 
 	it("rejects Pi versions below the minimum or with an invalid format", () => {
 		for (const version of [
-			"0.83.999",
-			"0.84.0",
-			"0.84",
-			"0.84.1-beta.1",
+			"0.85.0",
+			"0.99.999",
+			"1.0",
+			"1.0.0-beta.1",
 			"invalid",
 		])
 			expect(isSupportedPiVersion(version)).toBe(false);
