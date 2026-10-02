@@ -10,7 +10,7 @@ import type {
 	StreamOptions,
 } from "@earendil-works/pi-ai";
 
-export const CLAUDE_CODE_VERSION = "2.1.286";
+export const CLAUDE_CODE_VERSION = "2.1.287";
 export const CLAUDE_CODE_ENTRYPOINT = "sdk-cli";
 
 const CCH_PLACEHOLDER = "cch=00000";
@@ -274,7 +274,7 @@ export async function discoverClaudeCodeAtis(
 
 export async function transformClaudeCodePayload(
 	payload: unknown,
-	context: Context,
+	context: Pick<Context, "messages">,
 	sessionId: string | undefined,
 	identity: ClaudeCodeIdentity | undefined,
 ): Promise<JsonObject> {
@@ -646,7 +646,7 @@ export function isAnthropicOAuthToken(apiKey: string | undefined): boolean {
 
 export function mergeClaudeCodeOptions<T extends StreamOptions>(
 	options: T,
-	context: Context,
+	context: Pick<Context, "messages">,
 	identity:
 		| ClaudeCodeIdentity
 		| undefined

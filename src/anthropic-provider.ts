@@ -1,10 +1,10 @@
 import type {
 	Api,
 	ApiStreamOptions,
-	Context,
 	Model,
 	Provider,
 	SimpleStreamOptions,
+	TranscriptContext,
 } from "@earendil-works/pi-ai";
 import {
 	type ClaudeCodeIdentity,
@@ -27,12 +27,16 @@ export function wrapAnthropicProvider(
 	if (provider.id !== "anthropic")
 		throw new Error(`Pi Black cannot wrap provider "${provider.id}"`);
 
-	let hasAtisLatch = false;
-	let atisLatch: string | undefined | Promise<string | undefined>;
+	// ATIS assignments are per-model, so the latch has to be keyed by model ID.
+	// A single process-level latch would pin whatever the first request resolved
+	// to: if that model has no assignment, every later model would be left
+	// without the header even though the server assigned it one.
+	const atisLatches = new Map<string, Promise<string | undefined>>();
 	const latchedAtis = (modelId: string) => {
-		if (!hasAtisLatch) {
-			hasAtisLatch = true;
-			atisLatch = resolveAtis(modelId);
+		let atisLatch = atisLatches.get(modelId);
+		if (!atisLatch) {
+			atisLatch = Promise.resolve(resolveAtis(modelId));
+			atisLatches.set(modelId, atisLatch);
 		}
 		return atisLatch;
 	};
@@ -41,7 +45,7 @@ export function wrapAnthropicProvider(
 		...provider,
 		stream<T extends Api>(
 			model: Model<T>,
-			context: Context,
+			context: TranscriptContext,
 			options?: ApiStreamOptions<T>,
 		) {
 			if (!options || !isAnthropicOAuthToken(options.apiKey))
@@ -56,7 +60,7 @@ export function wrapAnthropicProvider(
 		},
 		streamSimple(
 			model: Model<Api>,
-			context: Context,
+			context: TranscriptContext,
 			options?: SimpleStreamOptions,
 		) {
 			if (!options || !isAnthropicOAuthToken(options.apiKey))

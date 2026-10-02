@@ -13,7 +13,7 @@ export const REPORT_MESSAGE_TYPE = "pi-black.anthropic-report";
 export const isPiBlackMessageType = (customType: unknown): boolean =>
 	customType === REQUEST_MESSAGE_TYPE || customType === REPORT_MESSAGE_TYPE;
 
-/** Claude Code's /feedback endpoint and its limits (claude-code 2.1.286: jpe, MQe). */
+/** Claude Code's /feedback endpoint and its limits (claude-code 2.1.287: jpe, MQe). */
 export const FEEDBACK_URL = "https://api.anthropic.com/api/claude_cli_feedback";
 const MAX_FEEDBACK_BYTES = 8 * 1024 * 1024;
 const MAX_RAW_TRANSCRIPT_BYTES = 4 * 1024 * 1024;
@@ -289,7 +289,7 @@ export type FeedbackInput = {
 };
 
 /**
- * Claude Code's /feedback payload (claude-code 2.1.286 `xs`), labeled as coming from pi:
+ * Claude Code's /feedback payload (claude-code 2.1.287 `xs`), labeled as coming from pi:
  * `surface` is "pi" and the description says so. `anthropicRequests` carries every recorded
  * request in full.
  */
