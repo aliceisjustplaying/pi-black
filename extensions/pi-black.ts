@@ -158,6 +158,14 @@ function registerAnthropicRequestRecording(pi: ExtensionAPI): void {
 				piVersion: VERSION,
 			});
 			const body = feedbackBody(payload, id);
+			if (body === undefined) {
+				ctx.ui.notify(
+					"Feedback payload is too large to send even after dropping the transcript. " +
+						"Share a narrower session, or report without the transcript.",
+					"error",
+				);
+				return;
+			}
 			const requests = (payload.anthropicRequests as unknown[]).length;
 			const ok = await ctx.ui.confirm(
 				"Send to Anthropic?",

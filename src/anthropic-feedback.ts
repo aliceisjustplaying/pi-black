@@ -325,8 +325,16 @@ export function buildFeedbackPayload(input: FeedbackInput): Record<string, unkno
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-/** The request body: Claude Code sends the payload as a JSON string under `content`. */
-export function feedbackBody(payload: Record<string, unknown>, sessionId: string): string {
+/**
+ * The request body: Claude Code sends the payload as a JSON string under `content`.
+ * Returns `undefined` when the payload is still over the cap after shrinking, which
+ * is how Claude Code behaves (`payload_too_large_precheck`): it declines to submit
+ * rather than sending an oversized body.
+ */
+export function feedbackBody(
+	payload: Record<string, unknown>,
+	sessionId: string,
+): string | undefined {
 	const outer = (inner: Record<string, unknown>) =>
 		JSON.stringify({
 			content: JSON.stringify(inner),
@@ -339,7 +347,10 @@ export function feedbackBody(payload: Record<string, unknown>, sessionId: string
 	const { rawTranscriptJsonl: _, ...withoutRaw } = payload;
 	body = outer(withoutRaw);
 	if (Buffer.byteLength(body) <= MAX_FEEDBACK_BYTES) return body;
-	return outer({ ...withoutRaw, transcript: [] });
+	body = outer({ ...withoutRaw, transcript: [] });
+	// The remaining request records are what the report is for, so they are never
+	// truncated; if they alone exceed the cap the submission is declined.
+	return Buffer.byteLength(body) <= MAX_FEEDBACK_BYTES ? body : undefined;
 }
 
 export async function submitFeedback(

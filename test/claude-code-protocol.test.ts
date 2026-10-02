@@ -142,6 +142,13 @@ const temporaryDirectories: string[] = [];
 const promptMessages = (prompt: string): Message[] => [
 	{ role: "user", content: prompt, timestamp: 1 },
 ];
+const blockPromptMessages = (blocks: string[]): Message[] => [
+	{
+		role: "user",
+		content: blocks.map((text) => ({ type: "text" as const, text })),
+		timestamp: 1,
+	},
+];
 const context = (prompt: string): Context => ({
 	messages: promptMessages(prompt),
 });
@@ -177,6 +184,21 @@ describe("Claude Code protocol", () => {
 		).toBe(
 			"x-anthropic-billing-header: cc_version=2.1.287.af0; cc_entrypoint=sdk-cli; cch=00000;",
 		);
+	});
+
+	it("fingerprints the first text block, as Claude Code's GQ() does", async () => {
+		// Claude Code selects prompt[4]/[7]/[20] from the FIRST text block.
+		// Concatenating every block would pick different characters and emit a
+		// different cc_version suffix for multi-block first messages.
+		const multi = blockPromptMessages(["a", "bcdefghijklmnopqrstuvwxyz"]);
+		expect(await claudeCodeVersionFingerprint(multi)).toBe("56c");
+		// First block alone must agree with the equivalent single-block prompt.
+		expect(await claudeCodeVersionFingerprint(multi)).toBe(
+			await claudeCodeVersionFingerprint(promptMessages("a")),
+		);
+		// And a long first block still drives the selection, ignoring later blocks.
+		const long = blockPromptMessages(["abcdefghijklmnopqrstuvwxyz", "zzz"]);
+		expect(await claudeCodeVersionFingerprint(long)).toBe("48c");
 	});
 
 	it("discovers and validates identity from Claude Code state without exposing it", async () => {
@@ -439,7 +461,12 @@ describe("Claude Code protocol", () => {
 		);
 
 		const [, init] = transport.mock.calls[0];
-		expect(String(init?.body)).toMatch(/cch=[0-9a-f]{5}/u);
+		// `cch=00000` is the untouched placeholder and also matches /cch=[0-9a-f]{5}/,
+		// so the shape alone cannot prove the patcher ran. Assert it left the wire.
+		const sent = String(init?.body);
+		expect(sent).toMatch(/cch=[0-9a-f]{5}/u);
+		expect(sent).not.toContain("cch=00000");
+		expect(sent).not.toBe(body);
 		const headers = new Headers(init?.headers);
 		expect(headers.get("x-client-request-id")).toMatch(/^[0-9a-f-]{36}$/u);
 		expect(headers.get("authorization")).toBe("Bearer secret");
@@ -451,5 +478,40 @@ describe("Claude Code protocol", () => {
 		);
 		const [, proxyInit] = transport.mock.calls[1];
 		expect(new Headers(proxyInit?.headers).get("x-cc-atis")).toBeNull();
+	});
+
+	it("omits an ATIS that Headers.set would reject, instead of throwing", async () => {
+		// Values above U+00FF are not ByteString-convertible: admitting them made
+		// Headers.set throw before the transport ran, breaking the request over an
+		// optional assignment. Such a value must simply be omitted.
+		const body = JSON.stringify({
+			model: "claude-opus-5",
+			messages: [],
+			max_tokens: 1,
+			stream: true,
+			system: [
+				{
+					type: "text",
+					text: "x-anthropic-billing-header: cc_version=2.1.287.000; cc_entrypoint=sdk-cli; cch=00000;",
+				},
+			],
+		});
+		for (const bad of ["\u6c49", "a b", "x\r\ny", "", "x".repeat(513)]) {
+			const transport = vi.fn<typeof fetch>(
+				async () => new Response(null, { status: 200 }),
+			);
+			await createClaudeCodeFetch(transport, Promise.resolve(bad))(
+				"https://api.anthropic.com/v1/messages",
+				{ method: "POST", body },
+			);
+			expect(transport).toHaveBeenCalledOnce();
+			expect(new Headers(transport.mock.calls[0][1]?.headers).get("x-cc-atis")).toBeNull();
+		}
+	});
+
+	it("keeps Latin-1 out of the ATIS header too", () => {
+		// Fetch accepts U+0080-U+00FF, but Claude Code's own gate is printable
+		// ASCII, so anything outside it is not an assignment we should forward.
+		expect(parseClaudeCodeAtis({ clientDataCacheSlots: { s: { at: 1, model: "m", data: { atis: "caf\u00e9" } } } }, "m")).toBeUndefined();
 	});
 });

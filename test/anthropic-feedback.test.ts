@@ -65,9 +65,36 @@ describe("Anthropic feedback payload", () => {
 			},
 			piErrorMessage: "This request was blocked",
 		});
-		expect(JSON.parse(feedbackBody(payload, sessionId))).toEqual({
+		expect(JSON.parse(feedbackBody(payload, sessionId)!)).toEqual({
 			content: JSON.stringify(payload),
 			session_id: sessionId,
 		});
+	});
+
+	it("declines rather than sending a payload that stays over the cap", () => {
+		const sessionId = "11111111-2222-4333-8444-555555555555";
+		const oversized = {
+			surface: "pi",
+			transcript: [],
+			// ~9 MiB of request records: over MAX_FEEDBACK_BYTES on their own,
+			// so dropping the transcript cannot bring the body back under it.
+			anthropicRequests: [{ blob: "x".repeat(9 * 1024 * 1024) }],
+		};
+		expect(feedbackBody(oversized, sessionId)).toBeUndefined();
+	});
+
+	it("still shrinks a large raw transcript down under the cap", () => {
+		const sessionId = "11111111-2222-4333-8444-555555555555";
+		const payload = {
+			surface: "pi",
+			transcript: [{ type: "user", text: "hello" }],
+			anthropicRequests: [{ requestId: "req_1" }],
+			rawTranscriptJsonl: "y".repeat(9 * 1024 * 1024),
+		};
+		const body = feedbackBody(payload, sessionId);
+		expect(body).toBeDefined();
+		const sent = JSON.parse(body!) as { content: string };
+		expect(sent.content).not.toContain("rawTranscriptJsonl");
+		expect(Buffer.byteLength(body!)).toBeLessThanOrEqual(8 * 1024 * 1024);
 	});
 });

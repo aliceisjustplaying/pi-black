@@ -145,10 +145,10 @@ function firstUserPrompt(messages: Message[]): string {
 	for (const message of messages) {
 		if (message.role !== "user") continue;
 		if (typeof message.content === "string") return message.content;
-		return message.content
-			.filter((block) => block.type === "text")
-			.map((block) => block.text)
-			.join("");
+		// Claude Code's GQ() takes the first text block only. Concatenating
+		// every block would select different characters for the fingerprint.
+		const block = message.content.find((candidate) => candidate.type === "text");
+		return block?.type === "text" ? block.text : "";
 	}
 	return "";
 }
@@ -204,12 +204,16 @@ function claudeConfigPath(env: NodeJS.ProcessEnv, configPath?: string): string {
 	return configPath ?? join(env.CLAUDE_CONFIG_DIR || homedir(), ".claude.json");
 }
 
+// Claude Code's bKr() admits printable US-ASCII only (`/^[\x21-\x7e]+$/`).
+// Anything else is either unrepresentable in a header or silently mangled:
+// Fetch rejects values above U+00FF with a ByteString error, which would throw
+// before the request is sent rather than omitting an optional assignment.
 function isSafeHeaderValue(value: unknown): value is string {
 	return (
 		typeof value === "string" &&
 		value.length > 0 &&
 		value.length <= 512 &&
-		!/[\s\x00-\x1f\x7f]/u.test(value)
+		/^[\x21-\x7e]+$/u.test(value)
 	);
 }
 
