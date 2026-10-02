@@ -16,12 +16,48 @@ type MessageIds = {
 	stopReason?: string;
 };
 
+type AssistantMessage = NonNullable<SessionEntry["message"]> & {
+	api?: string;
+	provider?: string;
+};
+
+/**
+ * A logged request that plausibly caused an error. A request that succeeded
+ * must never be attached to one: annotating a failed message with an HTTP 200
+ * from an earlier turn is worse than leaving it blank.
+ */
+function isFailedRequest(request: AnthropicRequestLogEntry): boolean {
+	return (
+		request.stopReason === "refusal" ||
+		request.status >= 400 ||
+		request.error !== undefined ||
+		request.streamError !== undefined
+	);
+}
+
+/**
+ * Only Anthropic requests are logged, so an assistant from another provider must
+ * not borrow one. Provenance is optional in older sessions; when it is unknown we
+ * fall through to the timestamp and failure checks rather than assuming.
+ */
+function isForeignAssistant(message: AssistantMessage): boolean {
+	if (message.provider !== undefined) return message.provider !== "anthropic";
+	if (message.api !== undefined) return message.api !== "anthropic-messages";
+	return false;
+}
+
+function toMillis(value: string | undefined): number {
+	if (!value) return Number.NEGATIVE_INFINITY;
+	const parsed = Date.parse(value);
+	return Number.isNaN(parsed) ? Number.NEGATIVE_INFINITY : parsed;
+}
+
 /**
  * Anthropic's ids for each assistant message entry. Messages match their request by
- * Anthropic's message id. A failed response has no message id, so each failed assistant
- * message takes the latest unmatched request logged at or before it.
+ * Anthropic's message id. A failed response has no message id, so each failed Anthropic
+ * assistant takes the latest unused failed request logged during its own turn.
  */
-function idsByEntry(
+export function idsByEntry(
 	entries: readonly SessionEntry[],
 	requests: readonly AnthropicRequestLogEntry[],
 ): Record<string, MessageIds> {
@@ -32,7 +68,8 @@ function idsByEntry(
 	const result: Record<string, MessageIds> = {};
 	const assistants = entries.filter((e) => e.message?.role === "assistant");
 	for (const entry of assistants) {
-		const message = entry.message!;
+		const message = entry.message as AssistantMessage;
+		if (isForeignAssistant(message)) continue;
 		const request = message.responseId ? byMessageId.get(message.responseId) : undefined;
 		if (request) used.add(request);
 		if (request || message.responseId?.startsWith("msg_"))
@@ -42,18 +79,34 @@ function idsByEntry(
 				stopReason: request?.stopReason ?? message.rawStopReason,
 			};
 	}
-	for (const entry of assistants) {
-		const message = entry.message!;
+	for (const [index, entry] of entries.entries()) {
+		const message = entry.message as AssistantMessage | undefined;
+		if (!message || message.role !== "assistant") continue;
 		if (result[entry.id] || message.stopReason !== "error") continue;
+		if (isForeignAssistant(message)) continue;
+		// Stay inside this turn: a request belongs to this assistant only if it was
+		// logged after the previous entry, so an abandoned branch or an earlier
+		// turn's failure cannot be adopted.
+		const floor = toMillis(entries[index - 1]?.timestamp);
 		const request = requests
-			.filter((r) => !used.has(r) && !r.messageId && r.ts <= entry.timestamp)
+			.filter(
+				(candidate) =>
+					!used.has(candidate) &&
+					!candidate.messageId &&
+					isFailedRequest(candidate) &&
+					toMillis(candidate.ts) > floor &&
+					toMillis(candidate.ts) <= toMillis(entry.timestamp),
+			)
 			.at(-1);
 		if (!request) continue;
 		used.add(request);
 		result[entry.id] = {
 			requestId: request.requestId,
 			messageId: null,
-			stopReason: request.stopReason ?? request.streamError ?? `HTTP ${request.status}`,
+			stopReason:
+				request.stopReason ??
+				request.streamError ??
+				(request.status >= 400 ? `HTTP ${request.status}` : undefined),
 		};
 	}
 	return result;

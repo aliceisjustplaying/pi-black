@@ -1,19 +1,13 @@
 # TODO
 
-- [ ] **Cover `src/share-html.ts` with tests.** It is the only source file with no
-      test. The blocker is that `exportShareHtml` deep-imports pi's own
-      `dist/core/export-html/index.js` through `pathToFileURL`, so testing the
-      function means mocking a dynamic import of a pi-internal path.
+- [x] **Cover `src/share-html.ts` with tests.** Done in `test/share-html.test.ts`:
+      `idsByEntry` is exported and its two-pass matching is pinned — by message
+      id, then by turn-scoped failed request. The provider guard, the
+      requirement that the candidate actually failed, and the turn floor are
+      each verified by removing that one constraint.
 
-      The testable core is `idsByEntry`, which is pure and does the two-pass
-      match: by `responseId` first, then the latest unused request with no
-      `messageId` at or before the entry timestamp for error messages.
-      Exporting it widens the module's surface; the alternative is keeping a
-      parallel copy of the matcher in the test, which will drift. Prefer
-      exporting.
-
-      Worth covering, because a mismatch here silently mis-annotates a shared
-      `/share-ant-pi` report rather than failing loudly.
-
-      Also worth pinning: the exported `<` escaping in `idsScript`, which keeps
-      session text from closing the injected `<script>` element.
+- [ ] **Pin the `idsScript` escaping.** `idsScript` is still unexported and
+      untested. Worth covering that session text cannot close the injected
+      `<script>` element, and that request/message ids and stop reasons stay
+      escaped before reaching `innerHTML`. Reviewers have probed this by hand
+      and found no breakout, but nothing prevents a regression.
