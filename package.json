@@ -1,6 +1,6 @@
 {
   "name": "pi-black",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "description": "Claude Code wire compatibility for Pi",
   "type": "module",
   "license": "MIT",

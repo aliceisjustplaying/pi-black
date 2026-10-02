@@ -2,96 +2,132 @@
 
 Use your Claude Max (or Pro) subscription with Pi.
 
-Pi Black is an unofficial Pi package that routes Anthropic OAuth requests through your existing Claude subscription usage by applying Claude Code 2.1.287 request conventions.
+Pi Black is an unofficial Pi extension that makes Anthropic OAuth requests look
+like Claude Code's, so your existing subscription covers Pi usage.
 
-## Install
+## Requirements
 
-Pi Black has three independently versioned compatibility surfaces:
-
-| Component | Compatible version |
+| Surface | Version |
 | --- | --- |
-| Pi package | Pi 1.0.0 or newer |
+| Pi | 1.0.0 or newer |
 | Claude Code protocol | 2.1.287 |
 
-The Pi package requires Pi 1.0.0 or newer, with no upper version limit. Future Pi releases are trusted until an incompatibility is identified; the package peer dependencies are `"*"` because Pi supplies its core packages at runtime.
+Pi Black follows Pi releases until an incompatibility is identified; its peer
+dependencies are `"*"` because Pi supplies its own core packages at runtime.
 
-Pi Black is a Pi extension only. The earlier standalone native build and its patch series have been removed; see [Migrating from the patch series](#migrating-from-the-patch-series).
+The protocol version is the part that moves. Every Claude Code release can
+change the request conventions Pi Black reproduces, so a Pi Black release tracks
+one specific Claude Code version rather than a range. Bump it deliberately.
+
+## Install
 
 ```sh
 pi install git:github.com/aliceisjustplaying/pi-black
 ```
 
-Pi checks unpinned Git packages for updates in the background. When a newer Pi Black commit is available, Pi displays a package-update notice; apply it with:
-
-```sh
-pi update --extensions
-```
-
-For a reproducible install, pin a release tag:
-
-```sh
-pi install git:github.com/aliceisjustplaying/pi-black@v0.1.0
-```
-
-Pinned packages do not move automatically. Install a newer tagged ref explicitly when you are ready to upgrade.
-
-Then use Pi's normal Anthropic login:
+Then log in with Pi's normal Anthropic flow:
 
 ```text
 /login anthropic
 ```
 
-The package replaces only the built-in Anthropic provider implementation and only transforms OAuth-token requests. It preserves Pi's credential storage, OAuth refresh, model behavior, tools, retries, streaming, and usage accounting. API-key requests and non-Anthropic providers pass through unchanged.
+Pi checks unpinned Git packages for updates in the background and shows an
+update notice; apply it with `pi update --extensions`.
 
-## Claude Code state discovery
+To pin a version:
 
-No identity environment variables are required. When Claude Code state exists, Pi Black reads the installation ID, account UUID and newest model-specific ATIS assignment from `~/.claude.json` (or the location selected by `CLAUDE_CONFIG_DIR`) in memory. It does not copy, print or persist those values.
+```sh
+pi install git:github.com/aliceisjustplaying/pi-black@v1.0.0
+```
 
-The ATIS assignment is latched per model ID on the first OAuth request for that model, because assignments are model-specific. Pi Black adds `x-cc-atis` only to direct HTTPS requests for `api.anthropic.com`; it never adds the header to custom base URLs. Set `CLAUDE_CODE_ATIS` only when an explicit in-memory override is needed.
+Pinned installs do not move on their own.
 
-Pi Black also adds Claude Code's verified model identity and knowledge-cutoff context for Fable 5.1 (June 2026), Opus 5 (May 2026), Opus 5.5 (June 2026), Sonnet 5 (January 2026) and Sonnet 5.5 (June 2026). It omits model context when the exact Claude Code metadata has not been verified.
+## What it does
 
-Subscription routing can still work when optional identity metadata is unavailable. If no matching ATIS assignment exists, Pi Black omits the header rather than forwarding an assignment for a different model.
+For Anthropic OAuth requests, Pi Black reproduces Claude Code's SDK-CLI request
+shape:
 
-## What it changes
-
-For Anthropic OAuth requests, Pi Black reproduces the version-specific SDK-CLI request shape:
-
-- exact billing and Agent SDK system-block ordering;
+- billing and Agent SDK system blocks, in Claude Code's order;
 - the prompt-dependent `cc_version` suffix;
-- structure-aware `cch` calculation using seeded XXH64;
-- per-request `x-client-request-id` values;
-- Claude Code session headers, including the latched `x-cc-atis` assignment for first-party requests;
-- verified model identity and knowledge-cutoff context for Fable 5.1, Opus 5, Opus 5.5, Sonnet 5 and Sonnet 5.5;
-- automatically discovered identity metadata when available.
+- the `cch` body checksum, computed with seeded XXH64;
+- a fresh `x-client-request-id` per request;
+- Claude Code session headers, including the `x-cc-atis` assignment for
+  first-party requests;
+- model identity and knowledge-cutoff context, where the metadata is verified.
 
-The checksum implementation validates and updates only the first billing system block. User content, tool results, descriptions, and nested `model` or `max_tokens` fields cannot redirect the placeholder patch.
+It replaces only the built-in Anthropic provider, and only for OAuth-token
+requests. Credential storage, token refresh, tools, retries, streaming, usage
+accounting and every other provider are untouched. API-key requests pass
+through unmodified.
 
-## Verify the package
+## Claude Code state
+
+Pi Black reads three things from `~/.claude.json` (or `CLAUDE_CONFIG_DIR`), in
+memory only: the installation ID, the account UUID, and the newest ATIS
+assignment matching the model in use. It does not copy, print or persist them,
+and `SECURITY.md` records what must never appear in a commit.
+
+ATIS assignments are per-model, so Pi Black resolves one per model ID on that
+model's first OAuth request. An earlier version latched a single assignment for
+the whole process, which silently dropped the header for every model after one
+that had no assignment.
+
+`x-cc-atis` is only ever sent to `https://api.anthropic.com`. Requests to a
+custom base URL never carry it. `CLAUDE_CODE_ATIS` overrides discovery in memory
+for one process if you need to.
+
+If no assignment matches the model, the header is omitted rather than sending
+another model's assignment.
+
+## Limits worth knowing
+
+- **The checksum is verified, the wire is not.** `xxHash64` is tested against
+  the reference implementation across three seeds, and the `cc_version`
+  fingerprint is derived the same way Claude Code derives it. Nothing in CI
+  contacts Anthropic, so "matches Claude Code" means "matches Claude Code's
+  implementation", not "accepted by the API".
+- **A redirect could carry the ATIS header.** The first-party check covers the
+  request's initial URL. A cross-origin redirect from Anthropic would forward
+  it. No such redirect has been observed.
+- **Model context is only added where verified.** Unknown models get no
+  identity or cutoff text rather than a guess.
+- **The feedback command can decline.** Payloads over 8 MiB are refused rather
+  than truncated, matching Claude Code. A session with very large error
+  metadata can hit this.
+
+## Development
 
 ```sh
 npm ci --ignore-scripts
-npm run check
+npm run check          # tsc --noEmit && vitest --run
+./scripts/verify.sh    # the above, plus a credential scan
 ```
 
-Public CI uses fake transports only. It never makes provider requests and requires no credentials.
+CI runs the same checks plus a compatibility pass. Everything uses fake
+transports; no test makes a provider request or needs credentials.
+
+Known gaps are tracked in [`TODO.md`](TODO.md).
 
 ## Migrating from the patch series
 
-Pi Black used to ship two surfaces: the Pi package, and a patch series under `patches/` that rewrote `packages/ai/src/api/anthropic-claude-code.ts` inside Pi's own source to build a standalone native binary.
+Pi Black used to also ship a patch series under `patches/` that rewrote Pi's own
+`packages/ai/src/api/anthropic-claude-code.ts` to build a standalone binary.
 
-The patch series duplicated every behavior the package already implemented in `src/`, and it stopped tracking it. At removal it still declared Claude Code protocol `2.1.277` against the package's `2.1.287`, and still carried a process-wide ATIS latch that suppressed `x-cc-atis` for one model whenever a model with no assignment made the first request. Every fix had to be written twice, and the second copy silently drifted.
+That series duplicated everything the package implements, and drifted: at
+removal it still declared protocol `2.1.277` against the package's `2.1.287`,
+and still carried the single-assignment ATIS latch described above. Every fix
+had to be written twice and the second copy went stale.
 
-It is removed along with `install.sh`, `launcher.sh`, `config/pi.env`, `BUILD.md`, `RELEASE.md` and the standalone release workflow. There is no standalone binary to install. Use the package:
+It and the standalone installer are gone. If you installed a `pi-black` binary,
+remove it and use `pi install` above. Your Claude Code login is unaffected.
 
-```sh
-pi install git:github.com/aliceisjustplaying/pi-black
-```
+## Status
 
-If you previously installed a `pi-black` binary through `install.sh`, remove it and install the package instead. Your Claude Code login is untouched; `/login anthropic` still applies.
+Unofficial, and not affiliated with or endorsed by Anthropic or the Pi project.
+You supply your own account credentials and are responsible for whether your
+use complies with the applicable terms.
 
-## Status and terms
+The compatibility mechanism is version-specific by nature. Treat a Claude Code
+or Pi update as something to re-check Pi Black against.
 
-This project is unofficial and is not affiliated with or endorsed by Anthropic or the upstream Pi project. Users must provide their own valid account credentials and determine whether use complies with applicable service terms. The compatibility mechanism is version-specific and must be revalidated when Claude Code or Pi changes.
-
-No OAuth tokens, identifiers, captures, or private Claude state are included in the package. Pi Black is distributed under the MIT license; see [`LICENSE`](LICENSE).
+MIT licensed; see [`LICENSE`](LICENSE).
