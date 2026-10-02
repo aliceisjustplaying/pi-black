@@ -22,6 +22,7 @@ import {
 	submitFeedback,
 } from "../src/anthropic-feedback.ts";
 import { wrapAnthropicProvider } from "../src/anthropic-provider.ts";
+import { exportShareHtml } from "../src/share-html.ts";
 import {
 	discoverClaudeCodeIdentity,
 	onAnthropicRequestLogged,
@@ -118,13 +119,14 @@ function registerAnthropicRequestRecording(pi: ExtensionAPI): void {
 			const dir = mkdtempSync(join(tmpdir(), "pi-share-ant-"));
 			try {
 				const html = join(dir, "session.html");
-				await run("pi", ["--export", sessionFile, html]);
+				await exportShareHtml(pi, ctx, html);
 				const { stdout } = await run("gh", ["gist", "create", "--public=false", html]);
-				const gistId = stdout.trim().split("/").pop();
+				const gistUrl = stdout.trim();
+				const gistId = gistUrl.split("/").pop();
 				if (!gistId) throw new Error(`could not read the gist id from: ${stdout}`);
 				const viewer = process.env.PI_SHARE_VIEWER_URL || "https://pi.dev/session/";
 				ctx.ui.notify(
-					`Share URL: ${viewer}#${gistId} (${requests.length} Anthropic requests in the report)`,
+					`Share URL: ${viewer}#${gistId}\nGist: ${gistUrl}\n(${requests.length} Anthropic requests in the report)`,
 					"info",
 				);
 			} catch (error) {
