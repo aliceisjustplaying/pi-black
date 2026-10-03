@@ -33,6 +33,19 @@ import {
 
 const run = promisify(execFile);
 
+/**
+ * OSC 52: asks the terminal you're looking at to set its clipboard, so copying
+ * works over SSH or from another device. tmux needs passthrough wrapping.
+ */
+function copyViaTerminal(text: string): void {
+	const osc = `\x1b]52;c;${Buffer.from(text).toString("base64")}\x07`;
+	const seq = process.env.TMUX ? `\x1bPtmux;${osc.replace(/\x1b/g, "\x1b\x1b")}\x1b\\` : osc;
+	try {
+		process.stdout.write(seq);
+	} catch {}
+}
+
+
 export default function piBlack(pi: ExtensionAPI): void {
 	if (!isSupportedPiVersion(VERSION)) {
 		throw new Error(
@@ -153,8 +166,10 @@ function registerAnthropicRequestRecording(pi: ExtensionAPI): void {
 					child.on("close", (code) => (code === 0 ? resolve() : reject(new Error(`pbcopy exited ${code}`))));
 					child.stdin.end(text);
 				});
+				copyViaTerminal(text);
 				ctx.ui.notify(`Copied: ${text}`, "info");
 			} catch (error) {
+				copyViaTerminal(text);
 				ctx.ui.notify(`Copy failed (${error instanceof Error ? error.message : String(error)}): ${text}`, "error");
 			}
 		},
