@@ -120,16 +120,16 @@ function idsScript(ids: Record<string, MessageIds>): string {
 	// Escape "<" so session text cannot close the script element.
 	const data = JSON.stringify(ids).replace(/</g, "\\u003c");
 	return `<style>
-.pi-black-ids { margin-top: 6px; font-size: 11px; color: var(--muted); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
-.pi-black-ids code { user-select: all; }
-.pi-black-ids .refusal { color: var(--error); }
+.ant-ids { margin-top: 6px; font-size: 11px; color: var(--muted); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+.ant-ids code { user-select: all; }
+.ant-ids .refusal { color: var(--error); }
 </style>
 <script>
 (() => {
   const ids = ${data};
   const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
   const tag = (el) => {
-    if (!el.id.startsWith("entry-") || el.querySelector(":scope > .pi-black-ids")) return;
+    if (!el.id.startsWith("entry-") || el.querySelector(":scope > .ant-ids")) return;
     const info = ids[el.id.slice(6)];
     if (!info) return;
     const parts = [
@@ -138,7 +138,7 @@ function idsScript(ids: Record<string, MessageIds>): string {
     ];
     if (info.stopReason) parts.push('<span class="' + (info.stopReason === "refusal" ? "refusal" : "") + '">stop ' + esc(info.stopReason) + "</span>");
     const div = document.createElement("div");
-    div.className = "pi-black-ids";
+    div.className = "ant-ids";
     div.innerHTML = parts.join(" · ");
     el.appendChild(div);
   };

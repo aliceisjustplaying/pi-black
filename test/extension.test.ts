@@ -86,7 +86,7 @@ describe("Anthropic request recording", () => {
 			expect(sendMessage).not.toHaveBeenCalled();
 			expect(appendEntry).toHaveBeenCalledOnce();
 			const [customType, data] = appendEntry.mock.calls[0];
-			expect(customType).toBe("pi-black.anthropic-request");
+			expect(customType).toBe("anthropic-request");
 			expect(data).toMatchObject({ requestId: "req_session-1", messageId: "msg_session-1", stopReason: "refusal" });
 
 			const user = { role: "user", content: "hi", timestamp: 1 };

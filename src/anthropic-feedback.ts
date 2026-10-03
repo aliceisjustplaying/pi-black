@@ -6,12 +6,16 @@ import {
 } from "./claude-code-protocol.ts";
 
 /** One hidden session message per Anthropic request, written as responses finish. */
-export const REQUEST_MESSAGE_TYPE = "pi-black.anthropic-request";
+export const REQUEST_MESSAGE_TYPE = "anthropic-request";
+/** Name used by older sessions; still read. */
+const LEGACY_REQUEST_MESSAGE_TYPE = "pi-black.anthropic-request";
+const isRequestType = (customType: unknown): boolean =>
+	customType === REQUEST_MESSAGE_TYPE || customType === LEGACY_REQUEST_MESSAGE_TYPE;
 /** The visible report a share command appends: every request id plus refusal details. */
-export const REPORT_MESSAGE_TYPE = "pi-black.anthropic-report";
+export const REPORT_MESSAGE_TYPE = "anthropic-report";
 
 export const isPiBlackMessageType = (customType: unknown): boolean =>
-	customType === REQUEST_MESSAGE_TYPE || customType === REPORT_MESSAGE_TYPE;
+	isRequestType(customType) || customType === REPORT_MESSAGE_TYPE || customType === "pi-black.anthropic-report";
 
 /** Claude Code's /feedback endpoint and its limits (claude-code 2.1.287: jpe, MQe). */
 export const FEEDBACK_URL = "https://api.anthropic.com/api/claude_cli_feedback";
@@ -101,11 +105,11 @@ export function collectRequests(
 	for (const entry of readLoggedRequests(sessionId)) add(entry);
 	for (const entry of entries) {
 		const message = entry.message;
-		if (message?.role === "custom" && message.customType === REQUEST_MESSAGE_TYPE)
+		if (message?.role === "custom" && isRequestType(message.customType))
 			add(message.details as AnthropicRequestLogEntry);
-		else if (entry.type === "custom_message" && entry.customType === REQUEST_MESSAGE_TYPE)
+		else if (entry.type === "custom_message" && isRequestType(entry.customType))
 			add(entry.details as AnthropicRequestLogEntry);
-		else if (entry.type === "custom" && entry.customType === REQUEST_MESSAGE_TYPE)
+		else if (entry.type === "custom" && isRequestType(entry.customType))
 			add(entry.data as AnthropicRequestLogEntry);
 	}
 	const known = new Set([...byKey.values()].map((entry) => entry.messageId));
@@ -150,7 +154,7 @@ export function buildReport(
 		"",
 		`Pi session \`${sessionId}\`. ${requests.length} Anthropic requests, ${problems.length} refused or failed. ` +
 			"Request ids are Anthropic's `request-id` response header; message ids are the `id` Anthropic returned. " +
-			"`clientRequestId` is pi-black's own `x-client-request-id`.",
+			"`clientRequestId` is the client's own `x-client-request-id`.",
 	];
 	if (problems.length > 0) {
 		lines.push("", "### Refused or failed requests");
