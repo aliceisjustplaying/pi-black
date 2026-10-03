@@ -1,4 +1,4 @@
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -52,8 +52,8 @@ export default function piBlack(pi: ExtensionAPI): void {
 
 /**
  * Records each Anthropic request of the session (Anthropic's request and message ids,
- * stop_details, usage, errors) as a custom session entry, and adds /share-ant-pi and
- * /share-ant-native for reporting a session to Anthropic.
+ * stop_details, usage, errors) as a custom session entry, and adds /share-ant-pi,
+ * /share-ant-native and /share-msg-only for reporting a session to Anthropic.
  *
  * An entry, not a message: an entry is never model context, and it leaves the assistant's
  * reply as the run's last message. `pi --print` prints only when the last message is the
@@ -128,6 +128,34 @@ function registerAnthropicRequestRecording(pi: ExtensionAPI): void {
 				ctx.ui.notify(`Share failed: ${error instanceof Error ? error.message : String(error)}`, "error");
 			} finally {
 				rmSync(dir, { recursive: true, force: true });
+			}
+		},
+	});
+
+	pi.registerCommand("share-msg-only", {
+		description: "Copy the latest Anthropic message id and request id to the clipboard as msgid,requestid",
+		handler: async (_args, ctx) => {
+			await ctx.waitForIdle();
+			const entries = ctx.sessionManager.getBranch() as unknown as SessionEntry[];
+			const latest = collectRequests(ctx.sessionManager.getSessionId(), entries)
+				.filter((entry) => entry.messageId || entry.requestId)
+				.sort((a, b) => a.ts.localeCompare(b.ts))
+				.at(-1);
+			if (!latest) {
+				ctx.ui.notify("No Anthropic request in this session yet", "error");
+				return;
+			}
+			const text = `${latest.messageId ?? ""},${latest.requestId ?? ""}`;
+			try {
+				await new Promise<void>((resolve, reject) => {
+					const child = spawn("pbcopy");
+					child.on("error", reject);
+					child.on("close", (code) => (code === 0 ? resolve() : reject(new Error(`pbcopy exited ${code}`))));
+					child.stdin.end(text);
+				});
+				ctx.ui.notify(`Copied: ${text}`, "info");
+			} catch (error) {
+				ctx.ui.notify(`Copy failed (${error instanceof Error ? error.message : String(error)}): ${text}`, "error");
 			}
 		},
 	});
