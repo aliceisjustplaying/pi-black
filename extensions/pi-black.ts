@@ -146,7 +146,7 @@ function registerAnthropicRequestRecording(pi: ExtensionAPI): void {
 	});
 
 	pi.registerCommand("share-msg-only", {
-		description: "Copy the latest Anthropic message id and request id to the clipboard as "msgid, requestid"",
+		description: "Copy the latest Anthropic message id and request id to the clipboard as `msgid, requestid`",
 		handler: async (_args, ctx) => {
 			await ctx.waitForIdle();
 			const entries = ctx.sessionManager.getBranch() as unknown as SessionEntry[];
